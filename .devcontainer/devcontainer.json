@@ -1,0 +1,24 @@
+{
+  "name": "Raspberry Pi 5 Cross Dev 64bit",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "features": {},
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-vscode.cpptools-extension-pack"
+      ],
+      "settings": {
+        "cmake.generator": "Ninja"
+      }
+    }
+  },
+  "mounts": [
+  "type=bind,source=${localWorkspaceFolder}/sysroot,target=/opt/rpi-sysroot",
+  "type=bind,source=${localWorkspaceFolder}/kernel-tree,target=/opt/rpi-kernel"
+]
+}

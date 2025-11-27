@@ -1,0 +1,67 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+
+  "configurePresets": [
+    {
+      "name": "rpi-userland-debug",
+      "displayName": "Raspberry Pi userland (Debug, arm64)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rpi-userland-debug",
+      "toolchainFile": "${sourceDir}/toolchains/aarch64-rpi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "rpi-userland-release",
+      "displayName": "Raspberry Pi userland (Release, arm64)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rpi-userland-release",
+      "toolchainFile": "${sourceDir}/toolchains/aarch64-rpi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    {
+      "name": "rpi-userland-debug-build",
+      "displayName": "Build Pi userland (Debug)",
+      "configurePreset": "rpi-userland-debug"
+    },
+    {
+      "name": "rpi-userland-debug-deploy",
+      "displayName": "Clean + build + deploy (Debug)",
+      "configurePreset": "rpi-userland-debug",
+      "cleanFirst": true,
+      "targets": [ "deploy_debug" ]
+    },
+    {
+      "name": "rpi-userland-release-build",
+      "displayName": "Build Pi userland (Release)",
+      "configurePreset": "rpi-userland-release"
+    },
+    {
+      "name": "rpi-userland-release-deploy",
+      "displayName": "Clean + build + deploy (Release)",
+      "configurePreset": "rpi-userland-release",
+      "cleanFirst": true,
+      "targets": [ "deploy_release" ]
+    },
+    {
+      "name": "rpi-userland-debug-remote-debug",
+      "displayName": "Clean + build + deploy + start gdbserver (Debug)",
+      "configurePreset": "rpi-userland-debug",
+      "cleanFirst": true,
+      "targets": [ "deploy_debug_gdb" ]
+    }
+  ]
+}

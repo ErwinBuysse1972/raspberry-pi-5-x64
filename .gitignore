@@ -1,0 +1,19 @@
+# Build artifacts
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+
+# Sysroot and kernel trees (synced / external sources)
+sysroot/
+kernel-tree/
+
+# VS Code local stuff (except the configs you want tracked)
+.vscode/*
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Misc
+*.swp
+*.log
