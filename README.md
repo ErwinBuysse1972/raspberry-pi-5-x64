@@ -1,14 +1,15 @@
-# Raspberry Pi 5 DevContainer Cross‑Compile Environment
+# Raspberry Pi 5 DevContainer Cross-Compile Environment
 
-This repository contains a VS Code DevContainer setup for cross‑compiling **Raspberry Pi 5** userland applications and kernel modules from a powerful x86\_64 machine.
+This repository contains a VS Code DevContainer setup for cross-compiling **Raspberry Pi 5** userland applications and kernel modules from a powerful x86_64 machine.
 
 It provides:
 
 - Automatic **sysroot syncing** from your Pi
-- Preconfigured **aarch64 cross‑toolchain**
-- **Userland** C/C++ build + deploy scripts
+- Preconfigured **aarch64 cross-toolchain**
+- **Userland** C/C++ build + deploy via **CMake Presets**
 - **Kernel module** build + deploy scripts
 - VS Code **IntelliSense** that understands the Pi headers & sysroot
+- Remote debugging using **gdbserver + VS Code**
 
 > All commands below are intended to be run **inside the DevContainer**, unless stated otherwise.
 
@@ -24,14 +25,21 @@ On your **host machine** (the PC running VS Code):
 
 On your **Raspberry Pi 5**:
 
-- 64‑bit Raspberry Pi OS (recommended)
+- 64-bit Raspberry Pi OS (recommended)
 - `ssh` server enabled
-- A user with sudo rights (default: `pi`)
+- A user with sudo rights (e.g. `erwinbuysse`)
 
 Take note of:
 
-- `RPI_HOST` – hostname or IP of your Pi (e.g. `raspi5.local` or `192.168.1.42`)
-- `RPI_USER` – login user on the Pi (e.g. `pi`)
+- `RPI_HOST` – hostname or IP of your Pi (e.g. `192.168.0.127`)
+- `RPI_USER` – login user on the Pi (e.g. `erwinbuysse`)
+
+Install required tools on the Pi:
+
+```bash
+sudo apt update
+sudo apt install rsync raspberrypi-kernel-headers build-essential gdbserver
+```
 
 ---
 
@@ -43,17 +51,16 @@ The repo is organized as follows (conventions; adjust to your own tree if needed
 .
 ├── .devcontainer/
 │   ├── devcontainer.json        # VS Code DevContainer configuration
-│   └── Dockerfile               # Image with cross‑toolchain + utilities
+│   └── Dockerfile               # Image with cross-toolchain + utilities
 ├── cmake/
-│   └── toolchain-raspi5.cmake   # CMake toolchain file for aarch64 cross‑compile
+│   └── toolchain-raspi5.cmake   # CMake toolchain file for aarch64 cross-compile
 ├── scripts/
-│   ├── sync-sysroot.sh          # Sync sysroot from the Pi
-│   ├── build-userland.sh        # Build userland binaries
-│   ├── deploy-userland.sh       # Deploy userland binaries to the Pi
-│   ├── build-kmod.sh            # Build kernel modules
-│   └── deploy-kmod.sh           # Deploy kernel modules to the Pi
-├── src/                         # Userland application code
-├── kernel/                      # Out‑of‑tree kernel module(s)
+│   └── sync-sysroot.sh          # Sync sysroot from the Pi
+├── kernel-mods/                 # Out-of-tree kernel module(s)
+├── kernel-tree/                 # Kernel source / headers (from Pi)
+├── userland/                    # Userland application code (e.g. hello_pi)
+├── CMakeLists.txt               # Project root CMake file
+├── CMakePresets.json            # Build + deploy + debug presets
 └── README.md
 ```
 
@@ -77,6 +84,7 @@ You now have a Linux x86\_64 environment with:
 - `aarch64-linux-gnu-gcc`, `aarch64-linux-gnu-g++` (or similar)
 - `cmake`, `ninja` (if used)
 - `rsync`, `ssh`, `scp`, etc.
+- `gdb-multiarch` (for remote debugging)
 
 ---
 
@@ -163,12 +171,11 @@ export RPI_TRIPLE="aarch64-linux-gnu"
 export RPI_TOOLCHAIN_PREFIX="${RPI_TRIPLE}-"
 ```
 
-### 5.1 `cmake/toolchain-raspi5.cmake`
+### 5.1 `toolchain/aarch64-rpi.cmake`
 
 Example CMake toolchain file:
 
-```cmake
-# Target system
+```# Target system
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 
@@ -191,6 +198,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 # Basic flags (adjust as needed)
 set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   --sysroot=${RPI_SYSROOT}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --sysroot=${RPI_SYSROOT}")
+
 ```
 
 If you use 32‑bit userland on the Pi, change the triple to `arm-linux-gnueabihf` and adjust `CMAKE_SYSTEM_PROCESSOR`.
@@ -198,81 +206,60 @@ If you use 32‑bit userland on the Pi, change the triple to `arm-linux-gnueabih
 ---
 
 ## 6. Userland Build + Deploy
-
+Userland build and deployment is driven entirely by CMakePresets.json.
+You do not need separate shell scripts for building or deploying.
 ### 6.1 Building userland code
 
-Typical CMake‑based build from the repo root:
+To configure & build the Debug variant:
 
 ```bash
-cmake -S . -B build \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-raspi5.cmake \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-cmake --build build -j"$(nproc)"
+cmake --preset rpi-userland-debug
+cmake --build --preset rpi-userland-debug
 ```
-
-You can wrap this in `scripts/build-userland.sh`:
+To configure & build the Release variant:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-BUILD_DIR="${1:-build}"
-
-cmake -S . -B "${BUILD_DIR}" \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-raspi5.cmake \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-cmake --build "${BUILD_DIR}" -j"$(nproc)"
+cmake --preset rpi-userland-release
+cmake --build --preset rpi-userland-release
 ```
+he presets ensure:
+The correct cross-toolchain file is used
+`CMAKE_BUILD_TYPE` is set appropriately
+`compile_commands.json` is exported for IntelliSense
 
-Run:
+### 6.2 Deploying userland binaries (via CMake build presets)
+
+Deployment to the Pi happens via build presets that target custom CMake deploy targets (`deploy_debug`, `deploy_release`, etc.).
 
 ```bash
-scripts/build-userland.sh
+cmake --build --preset rpi-userland-debug-deploy
 ```
 
-### 6.2 Deploying userland binaries
-
-Add `scripts/deploy-userland.sh` (adjust paths/app names):
+Deploy Release build:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-: "${RPI_HOST:?}"
-: "${RPI_USER:?}"
-
-BUILD_DIR="${1:-build}"
-TARGET_DIR="${2:-/home/${RPI_USER}/bin}"
-
-mkdir -p "${BUILD_DIR}"
-
-# Example: deploy a single binary `myapp`
-scp "${BUILD_DIR}/myapp" "${RPI_USER}@${RPI_HOST}:${TARGET_DIR}/"
-
-echo "Deployed myapp to ${RPI_USER}@${RPI_HOST}:${TARGET_DIR}"
+cmake --build --preset rpi-userland-release-deploy
 ```
 
-Example usage:
+The debug deploy preset will typically:
+- Ensure the remote directory exists (`/home/erwinbuysse/bin`)
+- Copy the hello_pi binary to the Pi
+- Place it as:
 
 ```bash
-scripts/deploy-userland.sh
+/home/erwinbuysse/bin/hello_pi_debug
 ```
-
-Then on the Pi:
-
-```bash
-ssh "${RPI_USER}@${RPI_HOST}" "~/bin/myapp"
-```
+Deployment logic (paths, user, host, etc.) is encoded in:
+- `CMakeLists.txt` (custom targets like deploy_debug)
+- `CMakePresets.json` (build presets choosing those targets)
+No manual `scp` invocation is necessary.
 
 ---
 
 ## 7. Kernel Module Build + Deploy
 
-This setup assumes **out‑of‑tree** kernel modules under `kernel/`.
+This setup assumes out-of-tree kernel modules under `kernel`/ (or `kernel-mods`/), built using a Makefile and helper scripts.
+> This section still uses scripts; you can later migrate it to CMakePresets if desired.
 
 ### 7.1 Kernel headers in the sysroot
 
@@ -456,20 +443,22 @@ Example snippet in `.vscode/settings.json`:
 
 ```bash
 # Inside DevContainer:
-export RPI_HOST="raspi5.local"
-export RPI_USER="pi"
+export RPI_HOST="192.168.0.127l"
+export RPI_USER="erwinbuysse"
 export SYSROOT="/opt/sysroot"
 
 # 1) Sync sysroot
 scripts/sync-sysroot.sh
 
 # 2) Build userland
-scripts/build-userland.sh
+cmake --preset rpi-userland-debug
+cmake --build --preset rpi-userland-debug
 
 # 3) Deploy userland binary
-scripts/deploy-userland.sh
+cmake --build --preset rpi-userland-debug-deploy
 
-# 4) Build kernel module
+
+# 4) Build kernel module (Debug)
 export RPI_KERNEL_VER="$(ssh "${RPI_USER}@${RPI_HOST}" "uname -r")"
 export KDIR="/opt/sysroot/lib/modules/${RPI_KERNEL_VER}/build"
 scripts/build-kmod.sh
@@ -491,7 +480,7 @@ The general flow is:
 1. Build your binary with debug info in the DevContainer.
 2. Deploy the binary to the Pi.
 3. Start `gdbserver` on the Pi, attached to your program.
-4. Attach with `aarch64-linux-gnu-gdb` (or VS Code) from inside the DevContainer.
+4. Attach with `gdb-multiarch` (or VS Code) from inside the DevContainer.
 
 ### 11.1 Prepare the Raspberry Pi
 
@@ -502,84 +491,96 @@ sudo apt update
 sudo apt install gdbserver
 ```
 
-Make sure your user can run the target binary on the Pi (e.g. it's in `~/bin` and executable).
+Ensure your user can run the target binary on the Pi (e.g. it’s in `~/bin` and executable).
 
-### 11.2 Build with debug info
+### 11.2 Build with debug info (CMake preset)
 
-In the DevContainer, ensure you build with debug symbols:
-
-```bash
-cmake -S . -B build \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-raspi5.cmake \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-cmake --build build -j"$(nproc)"
-```
-
-Deploy the binary as usual:
+In the DevContainer, build with the **Debug** preset:
 
 ```bash
-scripts/deploy-userland.sh
+cmake --preset rpi-userland-debug
+cmake --build --preset rpi-userland-debug
 ```
 
-Assume the binary is called `myapp` and ends up on the Pi at `~/bin/myapp`.
+Deploy the binary using the Debug deploy preset:
+
+```bash
+cmake --build --preset rpi-userland-debug-deploy
+```
+Assume the binary is called `hello_pi` and ends up on the Pi at:
+
+```bash
+/home/erwinbuysse/bin/hello_pi_debug
+```
 
 ### 11.3 Start gdbserver on the Pi
 
-On the Pi (SSH session or terminal):
+You have two options:
 
+**A) Manually (for testing)**
+
+On the Pi (SSH session or terminal):
 ```bash
 cd ~/bin
-gdbserver :1234 ./myapp
+gdbserver :2345 ./hello_pi_debug
+```
+`gdbserver` will wait for a debugger to connect on TCP port `2345`.
+
+**B) Automatically via CMake preset**
+
+From inside the DevContainer:
+```bash
+cmake --build --preset rpi-userland-debug-remote-debug
 ```
 
-`gdbserver` will wait for a debugger to connect on TCP port `1234`.
-
-### 11.4 Debug with aarch64-linux-gnu-gdb (CLI)
-
-Inside the DevContainer:
+This preset will:
+- Build the debug binary
+- Deploy it to the Pi
+- Start:
 
 ```bash
-export RPI_HOST="raspi5.local"   # or IP
-export RPI_USER="pi"
-export SYSROOT="/opt/sysroot"
+gdbserver :2345 /home/erwinbuysse/bin/hello_pi_debug
+```
+…all in one go.
 
-aarch64-linux-gnu-gdb build/myapp
+### 11.4 Debug with CLI gdb (optional)
+
+Inside the DevContainer, if you want to debug via CLI:
+```bash
+gdb-multiarch build/rpi-userland-debug/hello_pi
 ```
 
-In the `gdb` prompt:
-
-```gdb
+In the gdb prompt:
+```bash
 set sysroot /opt/sysroot
 set solib-search-path /opt/sysroot/lib:/opt/sysroot/usr/lib
-target remote ${RPI_HOST}:1234
-``
+target remote 192.168.0.127:2345
+``` 
 
 You can now set breakpoints, step through code, inspect variables, etc.
 
-> Tip: if you use CMake with `CMAKE_SYSROOT` set (as in this repo), `set sysroot` may not be strictly necessary, but it is often helpful for correct shared library resolution in gdb.
+>Tip: if you use CMake with CMAKE_SYSROOT set, set sysroot may not be strictly necessary, but it often helps with shared library  resolution in gdb.
 
 ### 11.5 Remote debugging with VS Code (C/C++ extension)
 
-You can create a debug configuration that uses the cross-debugger inside the DevContainer and connects to `gdbserver` running on the Pi.
+You can create a debug configuration that uses gdb-multiarch inside the DevContainer and connects to gdbserver running on the Pi.
 
-Create or extend `.vscode/launch.json`:
+Create or extend .vscode/launch.json:
 
 ```jsonc
 {
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Raspberry Pi 5 Remote Debug",
+            "name": "Raspberry Pi 5 Remote Debug (hello_pi)",
             "type": "cppdbg",
-            "request": "launch",               // or "attach" if you prefer
-            "program": "${workspaceFolder}/build/myapp",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/rpi-userland-debug/hello_pi",
             "args": [],
             "cwd": "${workspaceFolder}",
             "MIMode": "gdb",
-            "miDebuggerPath": "/usr/bin/aarch64-linux-gnu-gdb",
-            "miDebuggerServerAddress": "${env:RPI_HOST}:1234",
+            "miDebuggerPath": "/usr/bin/gdb-multiarch",
+            "miDebuggerServerAddress": "192.168.0.127:2345",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing",
@@ -592,9 +593,6 @@ Create or extend `.vscode/launch.json`:
                     "ignoreFailures": true
                 }
             ],
-            "environment": [
-                { "name": "RPI_HOST", "value": "raspi5.local" }
-            ],
             "externalConsole": false
         }
     ]
@@ -603,45 +601,45 @@ Create or extend `.vscode/launch.json`:
 
 Usage:
 
-1. On the Pi: run `gdbserver :1234 ~/bin/myapp`.
-2. In VS Code (inside the DevContainer): select **“Raspberry Pi 5 Remote Debug”** and start debugging (F5).
+1. Start gdbserver on the Pi (either manually or via `rpi-userland-debug-remote-debug` preset).
+2. In VS Code (inside the DevContainer): select “**Raspberry Pi 5 Remote Debug (hello_pi)**” and start debugging (F5).
 
 VS Code will:
+- Use `/usr/bin/gdb-multiarch` inside the container.
+- Connect to `gdbserver` on `192.168.0.127:2345`.
+- Use the local `build/rpi-userland-debug/hello_pi` binary (with symbols) and the synced sysroot for correct source + library mapping.
 
-- Use `aarch64-linux-gnu-gdb` inside the container.
-- Connect to `gdbserver` on the Pi via `miDebuggerServerAddress`.
-- Use the local `build/myapp` binary (with symbols) and the synced sysroot for correct source + library mapping.
+### 11.6 Optional: preLaunchTask to automate deploy + gdbserver
 
-### 11.6 Optional: preLaunchTask to deploy & start gdbserver
+If you still want VS Code to handle deploy + starting `gdbserver`, you can wire a `preLaunchTask` that simply calls the CMake preset:
 
-You can automate the deploy + start-gdbserver step with a VS Code task.
-
-Example `.vscode/tasks.json` snippet:
-
+`.vscode/tasks.json`:
 ```jsonc
 {
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "deploy-myapp",
+            "label": "deploy-and-start-gdbserver",
             "type": "shell",
-            "command": "scripts/deploy-userland.sh && ssh ${RPI_USER}@${RPI_HOST} 'cd ~/bin && gdbserver :1234 ./myapp'"
+            "command": "cmake --build --preset rpi-userland-debug-remote-debug",
+            "problemMatcher": []
         }
     ]
 }
-```
+``` 
 
 Then in `launch.json`, reference it:
-
 ```jsonc
-"preLaunchTask": "deploy-myapp"
+"preLaunchTask": "deploy-and-start-gdbserver"
 ```
 
-> Note: because `gdbserver` will take over the SSH session, this simple approach is best when run in an integrated terminal where you can see its output. For more advanced setups, you can use systemd services, tmux, or custom scripts on the Pi to manage `gdbserver`.
+Now hitting F5 will:
+1. Build + deploy + start `gdbserver` (via preset).
+2. Attach the debugger to `192.168.0.127:2345`.
 
 ---
 
-With this in place, the DevContainer is not just a cross-compile environment but also a **full remote debug workstation** for your Raspberry Pi 5 userland applications.
 
+With this in place, the DevContainer is not just a cross-compile environment but also a full remote debug workstation for your Raspberry Pi 5 userland applications.
 
-You can customize scripts, directories, and toolchain details to match your specific Raspberry Pi 5 project layout. This README documents the default conventions used in this DevContainer setup.
+You can customize directories, presets, and sysroot paths to match your exact setup; this README documents the default conventions currently used in this DevContainer.
