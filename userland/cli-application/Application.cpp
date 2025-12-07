@@ -460,8 +460,7 @@ bool cmdReadDHT11(const std::unordered_map<std::string,std::string>& options, st
     return false;    
 }
 
-bool cmdGetInput(const std::unordered_map<std::string, std::string>& options, 
-                std::vector<std::string>& errors)
+bool cmdGetInput(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
 {
     CFuncTracer trace("cmdGetInput", tracer);
     try
@@ -490,8 +489,7 @@ bool cmdGetInput(const std::unordered_map<std::string, std::string>& options,
     }
     return false;
 }
-bool cmdIsPinFree(const std::unordered_map<std::string, std::string>& options,
-                   std::vector<std::string>& errors)
+bool cmdIsPinFree(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
 {
 	CFuncTracer trace("cmdSetPinHigh", tracer);
     try
@@ -521,12 +519,13 @@ bool cmdIsPinFree(const std::unordered_map<std::string, std::string>& options,
     return false;
 }
 
-bool cmdSetPinHigh(const std::unordered_map<std::string, std::string>& options,
-                   std::vector<std::string>& errors)
+bool cmdSetPinHigh(const std::unordered_map<std::string, std::string>& options, std::unordered_set<std::string>& flags, std::vector<std::string>& errors)
 {
 	CFuncTracer trace("cmdSetPinHigh", tracer);
     try
     {
+        bool bok = false;
+        bool bUseRegistry = flags.find("registry") != flags.end();
 		auto it = options.find("pin");
 		bool bHasPin = (it != options.end());
 		if (!bHasPin)
@@ -536,13 +535,70 @@ bool cmdSetPinHigh(const std::unordered_map<std::string, std::string>& options,
 		}
 		int pin = std::stoi(it->second);
 
-        if (pinNr != -1)
-            ioPin.ReleasePin(pinNr, errors);
-        pinNr = pin;
+        if (bUseRegistry == false)
+        {
+            if (pinNr != -1)
+                ioPin.ReleasePin(pinNr, errors);
+            pinNr = pin;
 
-		bool bok = ioPin.SetHigh(pinNr, errors);
-		if (!bok)
-			errors.emplace_back(std::format("RUNTIME-ERROR : could not set the pin {0} high", pin));
+            bok = ioPin.SetHigh(pinNr, errors);
+            if (!bok)
+                errors.emplace_back(std::format("RUNTIME-ERROR : could not set the pin {0} high", pin));
+        }
+        else
+        {
+            if (GpioRegisters == nullptr)
+                GpioRegisters = std::make_unique<SB::RPI5::RP1IO>(tracer);
+
+                bok = GpioRegisters->setGpioPin(pin, true);
+            if (!bok)
+                errors.emplace_back(std::format("RUNTIME-ERROR : could not set the pin {0} high", pin));
+        }
+        return bok;
+    }
+    catch (const std::exception& ex)
+    {
+		cerr << FRed;
+        cerr << "ERROR - exception in cmdSetPinHigh: " << ex.what() << endl;
+		cerr << FWhite;
+    }
+    return false;
+}
+bool cmdSetPinLow(const std::unordered_map<std::string, std::string>& options, std::unordered_set<std::string>& flags, std::vector<std::string>& errors)
+{
+	CFuncTracer trace("cmdSetPinLow", tracer);
+    try
+    {
+        bool bok = false;
+        bool bUseRegistry = flags.find("registry") != flags.end();
+		auto it = options.find("pin");
+		bool bHasPin = (it != options.end());
+		if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+		int pin = std::stoi(it->second);
+
+        if (bUseRegistry == false)
+        {
+            if (pinNr != -1)
+                ioPin.ReleasePin(pinNr, errors);
+            pinNr = pin;
+
+            bok = ioPin.SetLow(pinNr, errors);
+            if (!bok)
+                errors.emplace_back(std::format("RUNTIME-ERROR : could not set the pin {0} low", pin));
+        }
+        else
+        {
+            if (GpioRegisters == nullptr)
+                GpioRegisters = std::make_unique<SB::RPI5::RP1IO>(tracer);
+
+            bok = GpioRegisters->setGpioPin(pin, false);
+            if (!bok)
+                errors.emplace_back(std::format("RUNTIME-ERROR : could not set the pin {0} low", pin));
+        }
         return bok;
     }
     catch (const std::exception& ex)
@@ -606,38 +662,6 @@ bool cmdSetPulse(const std::unordered_map<std::string, std::string>& options, st
     return false;
 }
 
-bool cmdSetPinLow(const std::unordered_map<std::string, std::string>& options,
-                  std::vector<std::string>& errors)
-{
-	CFuncTracer trace("cmdSetPinLow", tracer);
-    try
-    {
-		auto it = options.find("pin");
-		bool bHasPin = (it != options.end());
-		if (!bHasPin)
-		{
-			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
-			return false;
-		}
-		int pin = std::stoi(it->second);
-
-        if (pinNr != -1)
-            ioPin.ReleasePin(pinNr, errors);
-        pinNr = pin;
-
-		bool bok = ioPin.SetLow(pinNr, errors);
-		if (!bok)
-			errors.emplace_back(std::format("RUNTIME-ERROR : could not set the pin {0} low", pin));
-        return bok;
-    }
-    catch (const std::exception& ex)
-    {
-		cerr << FRed;
-        cerr << "ERROR - exception in cmdSetPinHigh: " << ex.what() << endl;
-		cerr << FWhite;
-    }
-    return false;
-}
 
 bool cmdMeasRC(const std::unordered_map<std::string, std::string>& options,
                std::vector<std::string>& errors)
@@ -725,7 +749,7 @@ bool Shell()
                 {
                     case eCmd::eSetHigh:
                     {
-                        bool ok = cmdSetPinHigh(pars.options, errors);
+                        bool ok = cmdSetPinHigh(pars.options, pars.flags, errors);
                         if (!ok)
                         {
                             errors.emplace_back("cmdSetPinHigh failed!");
@@ -736,7 +760,7 @@ bool Shell()
 
                     case eCmd::eSetLow:
                     {
-                        bool ok = cmdSetPinLow(pars.options, errors);
+                        bool ok = cmdSetPinLow(pars.options, pars.flags, errors);
                         if (!ok)
                         {
                             errors.emplace_back("cmdSetPinLow failed!");

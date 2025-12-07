@@ -198,6 +198,7 @@ namespace SB::RPI5
                 return false;
             }
             RioClear()->Out = mask;
+            return true;
         }
          catch(const std::exception& e)
         {
@@ -216,6 +217,7 @@ namespace SB::RPI5
                 return false;
             }
             RioXor()->Out = mask;
+            return true;
         }
          catch(const std::exception& e)
         {
