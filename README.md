@@ -97,9 +97,9 @@ To get correct headers and libraries for the Raspberry Pi, we sync the Pi’s **
 Inside the DevContainer, set (or place in `.env`, `.bashrc`, etc.):
 
 ```bash
-export RPI_HOST="raspi5.local"      # or IP
-export RPI_USER="pi"
-export SYSROOT="/opt/sysroot"
+export RPI_HOST="192.168.0.127"      # or IP
+export RPI_USER="erwinbuysse"
+export SYSROOT="/home/erwinbuysse/rpi-sysroot"
 ```
 
 ### 4.2 One‑time preparation on the Pi
