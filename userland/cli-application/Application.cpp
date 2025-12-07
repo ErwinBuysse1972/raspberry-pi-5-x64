@@ -160,6 +160,7 @@ void Usage(const std::vector<std::string>& errors)
     cout << "     -positive : positive pulse/edge" << endl;
     cout << "     -negative : negative pulse/edge" << endl;
     cout << "     -listen : goto input mode after pulse" << endl;
+    cout << "     -registry: use the Rp1 registers" << endl;
     cout << endl;
     cout << "**********************************************************************************************" << endl;
     cout << "  copyright @ 2025 - MOW Vlaanderen" << endl;
@@ -328,10 +329,10 @@ bool cmdGetRioOutEnabled(const std::unordered_map<std::string, std::string>& opt
         uint32_t rioOutEnable = GpioRegisters->getRioOutputEnable();
         if (rioOutEnable == static_cast<uint32_t>(-1))
         {
-            errors.push_back(std::format("RUNTIME_ERROR : cmdGetRioOutEnabled({0}) failed", pin));
+            errors.push_back(std::format("RUNTIME_ERROR : cmdGetRioOutEnabled() failed"));
             return false;
         }
-        logRegister(rioOutEnable, std::format("RIO_OE{0} Control", pin));
+        logRegister(rioOutEnable, std::format("RIO_OE Control"));
         return true;
     }
     catch(const std::exception& e)
@@ -353,10 +354,10 @@ bool cmdGetRioOut(const std::unordered_map<std::string, std::string>& options, s
         uint32_t rioOut = GpioRegisters->getRioOut();
         if (rioOut == static_cast<uint32_t>(-1))
         {
-            errors.push_back(std::format("RUNTIME_ERROR : cmdGetRioOut({0}) failed", pin));
+            errors.push_back(std::format("RUNTIME_ERROR : cmdGetRioOut() failed"));
             return false;
         }
-        logRegister(rioOut, std::format("RIO_OUT{0} Control", pin));
+        logRegister(rioOut, std::format("RIO_OUT Control"));
         return true;
     }
     catch(const std::exception& e)
@@ -378,10 +379,10 @@ bool cmdGetRioIn(const std::unordered_map<std::string, std::string>& options, st
         uint32_t rioIn = GpioRegisters->getRioIn();
         if (rioIn == static_cast<uint32_t>(-1))
         {
-            errors.push_back(std::format("RUNTIME_ERROR : cmdGetRioIn({0}) failed", pin));
+            errors.push_back(std::format("RUNTIME_ERROR : cmdGetRioIn() failed"));
             return false;
         }
-        logRegister(rioIn, std::format("RIO_IN{0} Control", pin));
+        logRegister(rioIn, std::format("RIO_IN Control"));
         return true;
     }
     catch(const std::exception& e)
@@ -403,10 +404,10 @@ bool cmdGetRioInSync(const std::unordered_map<std::string, std::string>& options
         uint32_t rioInSync = GpioRegisters->getRioInSync();
         if (rioInSync == static_cast<uint32_t>(-1))
         {
-            errors.push_back(std::format("RUNTIME_ERROR : cmdGetRioInSync({0}) failed", pin));
+            errors.push_back(std::format("RUNTIME_ERROR : cmdGetRioInSync() failed"));
             return false;
         }
-        logRegister(rioInSync, std::format("RIO_INSYNC{0} Control", pin));
+        logRegister(rioInSync, std::format("RIO_INSYNC Control"));
         return true;
     }
     catch(const std::exception& e)
