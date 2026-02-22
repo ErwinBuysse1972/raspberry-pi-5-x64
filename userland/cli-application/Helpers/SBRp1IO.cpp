@@ -6,25 +6,20 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <chrono>
+#include <thread>
 #include "../Tracer/cfunctracer.h"
+#include "RP1Base.h"
 #include "SBRp1IO.h"
 
 namespace SB::RPI5
 {
     RP1IO::RP1IO(std::shared_ptr<CTracer> tracer)
-    : m_trace(tracer)
-    , m_PERIBase(nullptr)
-    , m_GPIOBase(nullptr)
-    , m_RIOBase(nullptr)
-    , m_PADBase(nullptr)
-    , m_pad(nullptr)
+        : RP1Base(tracer)
     {
         CFuncTracer trace("RP1IO::RP1IO", m_trace);
         try
         {
-            bool bok = initialize();
-            if (!bok)
-                trace.Error("initialize failed");
         }
         catch(const std::exception& e)
         {
@@ -43,71 +38,22 @@ namespace SB::RPI5
             trace.Error("Exception occurred : %s", e.what());
         }
     }
-    bool RP1IO::initialize()
-    {
-        CFuncTracer trace("RP1IO::initialize", m_trace);
-        try
-        {
-            int memfd = open("/dev/mem", O_RDWR | O_SYNC);
-            uint32_t* map = (uint32_t*)mmap(
-                nullptr,
-                64*1024*1024,
-                (PROT_READ | PROT_WRITE),
-                MAP_SHARED,
-                memfd, 
-                0x1f00000000); 
-            close(memfd);
-            m_PERIBase = map;
-            if (map == MAP_FAILED)
-            {
-                int memfd = open("/dev/gpiomem0", O_RDWR, O_SYNC);
-                uint32_t *map = (uint32_t *) mmap(
-                    nullptr,
-                    576 * 1024,
-                    (PROT_READ | PROT_WRITE),
-                    MAP_SHARED, 
-                    memfd,
-                    0x0);
-                close(memfd);
-                if (map == MAP_FAILED)
-                {
-                    trace.Error("mmap failed : %s", strerror(errno));
-                    return false;
-                }
-                m_PERIBase = map - 0xD0000 / 4;
-            }
-
-            m_GPIOBase = m_PERIBase + 0xD0000 / 4;
-            m_RIOBase = m_PERIBase + 0xe0000 / 4;
-            m_PADBase = m_PERIBase + 0xf0000 / 4;
-            m_pad = m_PADBase + 1; // PADBase + 0 = Voltage select register
-            return true;
-        }
-        catch(const std::exception& e)
-        {
-            std::cerr << e.what() << '\n';
-        }
-        return false;
-    }
-    RP1_GPIO_Regs_t* RP1IO::GPIOBase()
-    {
-        return (RP1_GPIO_Regs_t*)m_GPIOBase;
-    }
+  
     RP1_Regs_t* RP1IO::RioBase()
     {
-        return (RP1_Regs_t*)m_RIOBase;
+        return (RP1_Regs_t*)RIOBase();
     }
     RP1_Regs_t* RP1IO::RioXor()
     {
-        return (m_RIOBase)? (RP1_Regs_t*)(m_RIOBase + 0x1000 /4) : nullptr;
+        return (RIOBase())? (RP1_Regs_t*)(RIOBase() + 0x1000 /4) : nullptr;
     }
     RP1_Regs_t* RP1IO::RioSet()
     {
-        return (m_RIOBase)? (RP1_Regs_t*)(m_RIOBase + 0x2000 /4): nullptr;
+        return (RIOBase())? (RP1_Regs_t*)(RIOBase() + 0x2000 /4): nullptr;
     }
     RP1_Regs_t* RP1IO::RioClear()
     {
-        return (m_RIOBase)? (RP1_Regs_t*)(m_RIOBase + 0x3000 /4): nullptr;
+        return (RIOBase())? (RP1_Regs_t*)(RIOBase() + 0x3000 /4): nullptr;
     }
 
     bool RP1IO::setDirInMask(uint32_t mask)
@@ -306,7 +252,14 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::setGpioPullUpPullDown", m_trace);
         try
         {
-            m_pad[pin] &= ~0xC;
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
+            {
+                trace.Error("RP1IO is not initialized (m_pad = nullptr)");
+                return false;
+            }
+
+            PAD[pin] &= ~0xC;
             if (up) setGpioPullUp(pin);
             if (down) setGpioPullDown(pin);
             return true;
@@ -322,13 +275,14 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::setGpioPullDown", m_trace);
         try
         {
-              if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            m_pad[pin] &= ~0xC;
-            m_pad[pin] |= 0x4;
+            PAD[pin] &= ~0xC;
+            PAD[pin] |= 0x4;
             return true;
         }
         catch(const std::exception& e)
@@ -342,13 +296,15 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::setGpioPullUp", m_trace);
         try
         {
-             if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            m_pad[pin] &= ~0xC;
-            m_pad[pin] |= 0x8;
+
+            PAD[pin] &= ~0xC;
+            PAD[pin] |= 0x8;
             return true;
         }
         catch(const std::exception& e)
@@ -362,12 +318,14 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::disabledGpioPulls", m_trace);
         try
         {
-             if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            m_pad[pin] &= ~0xC;
+
+            PAD[pin] &= ~0xC;
             return true;
         }
         catch(const std::exception& e)
@@ -381,13 +339,15 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::setGpioInputHysteris", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            m_pad[pin] &= ~0x02;
-            if (enabled) m_pad[pin] |= 0x02;
+
+            PAD[pin] &= ~0x02;
+            if (enabled) PAD[pin] |= 0x02;
             return true;
         }
         catch(const std::exception& e)
@@ -401,14 +361,15 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::setGpioSlewRate", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            m_pad[pin] &= ~0x01;
+            PAD[pin] &= ~0x01;
             if (slew == eGpioSlewRate::eFast)
-                m_pad[pin] |= 0x01;
+                PAD[pin] |= 0x01;
             return true;
         }
         catch(const std::exception& e)
@@ -422,18 +383,19 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::setGpioDriveStrength", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            m_pad[pin] &= ~0x30;
+            PAD[pin] &= ~0x30;
             switch(drive)
             {
                 case eGpioDrive::eCurrent_2mA: break;
-                case eGpioDrive::eCurrent_4mA: m_pad[pin] |= 0x10; break;
-                case eGpioDrive::eCurrent_8mA: m_pad[pin] |= 0x20; break;
-                case eGpioDrive::eCurrent_12mA: m_pad[pin] |= 0x30; break;
+                case eGpioDrive::eCurrent_4mA: PAD[pin] |= 0x10; break;
+                case eGpioDrive::eCurrent_8mA: PAD[pin] |= 0x20; break;
+                case eGpioDrive::eCurrent_12mA: PAD[pin] |= 0x30; break;
 
                 default:
                     trace.Error("Unknown drive : %ld", drive);
@@ -452,12 +414,13 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::isGpioPullUp", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            return m_pad[pin] & 0x08 == 0x08;
+            return PAD[pin] & 0x08 == 0x08;
         }
         catch(const std::exception& e)
         {
@@ -470,12 +433,13 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::isGpioPullDown", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            return m_pad[pin] & 0x04 == 0x04;
+            return PAD[pin] & 0x04 == 0x04;
         }
         catch(const std::exception& e)
         {
@@ -488,12 +452,13 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::isGpioHysterisEnabled", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return false;
             }
-            return m_pad[pin] & 0x02 == 0x02;
+            return PAD[pin] & 0x02 == 0x02;
         }
         catch(const std::exception& e)
         {
@@ -506,12 +471,14 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getGpioSlewRate", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return eGpioSlewRate::eUnknown;
             }
-            return (m_pad[pin] & 0x01 == 0x1)? eGpioSlewRate::eFast : eGpioSlewRate::eSlow;
+
+            return (PAD[pin] & 0x01 == 0x1)? eGpioSlewRate::eFast : eGpioSlewRate::eSlow;
         }
         catch(const std::exception& e)
         {
@@ -524,15 +491,17 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getGpioDrive", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return eGpioDrive::eUnknown;
             }
-            return (m_pad[pin] & 0x30 == 0x00)? eGpioDrive::eCurrent_2mA :
-                   (m_pad[pin] & 0x30 == 0x01)? eGpioDrive::eCurrent_4mA :
-                   (m_pad[pin] & 0x30 == 0x02)? eGpioDrive::eCurrent_8mA :
-                   (m_pad[pin] & 0x30 == 0x30)? eGpioDrive::eCurrent_12mA :
+
+            return (PAD[pin] & 0x30 == 0x00)? eGpioDrive::eCurrent_2mA :
+                   (PAD[pin] & 0x30 == 0x01)? eGpioDrive::eCurrent_4mA :
+                   (PAD[pin] & 0x30 == 0x02)? eGpioDrive::eCurrent_8mA :
+                   (PAD[pin] & 0x30 == 0x30)? eGpioDrive::eCurrent_12mA :
                    eGpioDrive::eUnknown;
         }
         catch(const std::exception& e)
@@ -547,7 +516,7 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getGpioStatus", m_trace);
         try
         {
-            RP1_GPIO_Regs_t* pGpioBase = GPIOBase();
+            volatile RP1_GPIO_Regs_t* pGpioBase = RP1Base::GPIOBase();
             if (pGpioBase == nullptr)
             {
                 trace.Error("RP1IO is not initialized (GPIOBase = nullptr)");
@@ -568,7 +537,7 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getGpioCntrl", m_trace);
         try
         {
-            RP1_GPIO_Regs_t* pGpioBase = GPIOBase();
+            volatile RP1_GPIO_Regs_t* pGpioBase = RP1Base::GPIOBase();
             if (pGpioBase == nullptr)
             {
                 trace.Error("RP1IO is not initialized (GPIOBase = nullptr)");
@@ -587,7 +556,7 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getRioOut", m_trace);
         try
         {
-            RP1_Regs_t* pRioBase = RioBase();
+            volatile RP1_Regs_t* pRioBase = RioBase();
             if (pRioBase == nullptr)
             {
                 trace.Error("RP1IO is not initialized (RioBase = nullptr)");
@@ -606,7 +575,7 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getRioOutputEnable", m_trace);
         try
         {
-            RP1_Regs_t* pRioBase = RioBase();
+            volatile RP1_Regs_t* pRioBase = RioBase();
             if (pRioBase == nullptr)
             {
                 trace.Error("RP1IO is not initialized (RioBase = nullptr)");
@@ -625,7 +594,7 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getRioIn", m_trace);
         try
         {
-            RP1_Regs_t* pRioBase = RioBase();
+            volatile RP1_Regs_t* pRioBase = RioBase();
             if (pRioBase == nullptr)
             {
                 trace.Error("RP1IO is not initialized (RioBase = nullptr)");
@@ -644,7 +613,7 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getRioInSync", m_trace);
         try
         {
-            RP1_Regs_t* pRioBase = RioBase();
+            volatile RP1_Regs_t* pRioBase = RioBase();
             if (pRioBase == nullptr)
             {
                 trace.Error("RP1IO is not initialized (RioBase = nullptr)");
@@ -663,12 +632,13 @@ namespace SB::RPI5
         CFuncTracer trace("RP1IO::getPad", m_trace);
         try
         {
-            if (m_pad == nullptr)
+            volatile uint32_t *PAD = pad();
+            if (PAD == nullptr)
             {
                 trace.Error("RP1IO is not initialized (m_pad = nullptr)");
                 return static_cast<uint32_t>(-1);
             }
-            uint32_t pad = m_pad[pin];
+            uint32_t pad = PAD[pin];
             trace.Info("pad : 0x%p", pad);
             return pad;
         }
@@ -678,5 +648,93 @@ namespace SB::RPI5
         }
         return static_cast<uint32_t>(-1);
     
+    }
+    bool RP1IO::SetPulse(int pin, int widthus, int LeadPulseTimeUs, int PostPulseTimeUs, eRp1IoPulseType tp, bool bListen)
+    {
+        CFuncTracer trace("RP1IO::SetPulse", m_trace);
+        using namespace std::chrono;
+        try
+        {
+            uint32_t mask = 1ul << pin;
+            if (setDirOutMask(mask) == false)
+            {
+                trace.Error("Failed to set the pin %ld to output", pin);
+            }
+            if (tp == eRp1IoPulseType::ePositive)
+            {
+                if (setGpioPin(pin, 0) == false)
+                {
+                    trace.Error("failed to set positive pulse initial level (setGpioPin %ld low )", pin);
+                    return false;
+                } 
+                if (LeadPulseTimeUs > 0) std::this_thread::sleep_for(microseconds(LeadPulseTimeUs));
+                if (setGpioPin(pin, 1) == false)
+                {
+                    trace.Error("failed to set positive pulse level (setGpioPin %ld high )", pin);
+                    return false;
+                }
+                if (widthus > 0) std::this_thread::sleep_for(microseconds(widthus));
+                if (setGpioPin(pin, 0) == false)
+                {
+                    trace.Error("failed to set positive pulse post level (setGpioPin %ld low )", pin);
+                    return false;
+                }
+                if (PostPulseTimeUs > 0) std::this_thread::sleep_for(microseconds(PostPulseTimeUs));
+            }
+            else
+            {
+                if (setGpioPin(pin, 1) == false)
+                {
+                    trace.Error("failed to set positive pulse initial level (setGpioPin %ld high )", pin);
+                    return false;
+                }
+                if (LeadPulseTimeUs > 0) std::this_thread::sleep_for(microseconds(LeadPulseTimeUs));
+                if (setGpioPin(pin, 0) == false)
+                {
+                    trace.Error("failed to set positive pulse level (setGpioPin %ld low )", pin);
+                    return false;
+                }
+                if (widthus > 0) std::this_thread::sleep_for(microseconds(widthus));
+                if (setGpioPin(pin, 1) == false)
+                {
+                    trace.Error("failed to set positive pulse post level (setGpioPin %ld high )", pin);
+                    return false;
+                }
+                if (PostPulseTimeUs > 0) std::this_thread::sleep_for(microseconds(PostPulseTimeUs));
+            }
+
+            if (bListen)
+            {
+                if (setDirInMask(mask) == false)
+                {
+                    trace.Error("Could not change the pin direction (mask: 0x%p)", mask);
+                    return false;
+                }
+            }
+            return true;
+        }
+        catch(const std::exception& e)
+        {
+            trace.Error("Exception occurred : %s", e.what());
+        }
+        return false;
+    }
+    bool RP1IO::FastClock(int pin, int periods)
+    {
+        CFuncTracer trace("RP1IO::FastClock", m_trace);
+        try
+        {
+            uint32_t mask = 1ul << pin;
+            for(int i=0; i < periods; i++)
+            {
+                RioXor()->Out = mask;
+            }
+            return true;
+        }
+        catch(const std::exception& e)
+        {
+            std::cerr << e.what() << '\n';
+        }
+        return false;
     }
 }

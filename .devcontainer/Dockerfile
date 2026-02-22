@@ -12,10 +12,12 @@ RUN apt-get update && \
         gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
         crossbuild-essential-arm64 \
         rsync openssh-client \
+         python3 \
         # Kernel build deps
         bc flex bison \
         libssl-dev \
         libncurses-dev \
+        libreadline-dev \
         dwarves \
         cpio kmod \
     && rm -rf /var/lib/apt/lists/*

@@ -5,6 +5,7 @@
 #include "Helpers/cout_ext.h"
 #include "Helpers/DHT11.h"
 #include "Helpers/SBRp1IO.h"
+#include "Helpers/SBRP1Pwm.h"
 #include "Tracer/cfunctracer.h"
 #include "Tracer/ctracer.h"
 
@@ -16,6 +17,8 @@
 #include <unordered_map>
 #include <vector>
 #include <exception>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 using std::cout;
 using std::cerr;
@@ -24,6 +27,7 @@ using std::endl;
 std::unordered_map<std::string, MOW::Statistics::MetricValue> m_Metrics;
 std::shared_ptr<CFileTracer> tracer = std::make_shared<CFileTracer>("./", "cliApplication.log", TracerLevel::TRACER_DEBUG_LEVEL);
 std::unique_ptr<SB::RPI5::RP1IO> GpioRegisters = nullptr;
+std::unique_ptr<SB::RPI5::RP1PWM> PwmRegisters = nullptr;
 int pinNr = -1;
 SB::RPI5::SBPio ioPin(tracer);
 
@@ -40,6 +44,7 @@ enum class eCmd
 	testParameterParsing,
 	enumchips,
 
+    // GPIO Commands
     eGetGpioStatus,
     eGetGpioCntrl,
     eGetRpioOut,
@@ -47,6 +52,21 @@ enum class eCmd
     eGetRpioIn,
     eGetRpioInSync,
     eGetPAD,
+    eFastClk,
+    ePinSetFunction,
+
+    // PWM Commands
+    ePwmGetRegGlobal,
+    ePwmGetReg,
+    ePwmGetClk,
+    ePwmSetClk,
+    ePwmSetRangeDutyPhase,
+    ePwmSetFrequencyDuty,
+    ePwmEnable,
+    ePwmDisable,
+    ePwmSetMode,
+    ePwmSetInvert,
+    ePwmClearInvert,
 
     readDHT11,
     eQuit
@@ -122,6 +142,19 @@ eCmd GetCommand(std::string& command)
     if (sLower.find("getrpioinsync") != std::string::npos) return eCmd::eGetRpioInSync;
     if (sLower.find("getrpioin") != std::string::npos) return eCmd::eGetRpioIn;
     if (sLower.find("getpad") != std::string::npos) return eCmd::eGetPAD;
+    if (sLower.find("fastclk") != std::string::npos) return eCmd::eFastClk;
+    if (sLower.find("pwmgetregglobal") != std::string::npos) return eCmd::ePwmGetRegGlobal;
+    if (sLower.find("pwmgetreg") != std::string::npos) return eCmd::ePwmGetReg;
+    if (sLower.find("pwmgetclk") != std::string::npos) return eCmd::ePwmGetClk;
+    if (sLower.find("pwmsetclk") != std::string::npos) return eCmd::ePwmSetClk;
+    if (sLower.find("pwmsetrange") != std::string::npos) return eCmd::ePwmSetRangeDutyPhase;
+    if (sLower.find("pwmsetfreq") != std::string::npos) return eCmd::ePwmSetFrequencyDuty;
+    if (sLower.find("pwmenable") != std::string::npos) return eCmd::ePwmEnable;
+    if (sLower.find("pwmdisable") != std::string::npos) return eCmd::ePwmDisable;
+    if (sLower.find("pwmsetmode") != std::string::npos) return eCmd::ePwmSetMode;
+    if (sLower.find("pwmsetinvert") != std::string::npos) return eCmd::ePwmSetInvert;
+    if (sLower.find("pwmclearinvert") != std::string::npos) return eCmd::ePwmClearInvert;
+    if (sLower.find("setfunction") != std::string::npos) return eCmd::ePinSetFunction;
     return eCmd::eUnknown;
 }
 
@@ -151,11 +184,35 @@ void Usage(const std::vector<std::string>& errors)
     cout << "    - getrpioinsync : get the RIO_INSYNC register for all IO pins" << endl;
     cout << "    - getrpioin : get the RIO_IN register for all IO pins" << endl;
     cout << "    - getpad : get the PAD register of specific GPIO pin (mandatory --pin)" << endl;
+    cout << "    - setfunction: set the pad and function for a specific pin (mandatory --pin, --pad, --func)" << endl;
+    cout << "    - fastclk : generates a fast clk (mandatory --pin, --periods)" << endl;
+    cout << "    - pwmgetregglobal: get pwm global registers (optional --base)" << endl;
+    cout << "    - pwmgetreg: get pwm registrs (mandatory --pin, optional --base)" << endl;
+    cout << "    - pwmgetclk: get the pwm clock registers" << endl;
+    cout << "    - pwmsetclk: set the pwm clock (mandatory --div, --pin and --frac)" << endl;
+    cout << "    - pwmsetrange: set the range/phase/duty of the pwm signal (mandatory --pin, --range, --duty and --phase)" << endl;
+    cout << "    - pwmsetfreq: set the frequency of the pwm signal (mandatory --pin, --freq and --duty)" << endl;
+    cout << "    - pwmenable: enable the pwm (mandatory --pin)" << endl;
+    cout << "    - pwmdisable: disable the pwm (mandatory --pin)" << endl;
+    cout << "    - pwmsetmode: set the mode of the pwm (mandatory --pin, --pwmmode)" << endl;
+    cout << "    - pwmsetinvert: invert the pwm signal (mandatory --pin)" << endl;
+    cout << "    - pwmclearinvert: clear the inversion of the signal (mandatory --pin)" << endl;
     cout << "options:" << endl;
     cout << "    --pin=<number> : give the pin you want to perform the actions" << endl;
+    cout << "    --pad=<padvalue> : gives the hw configuration for specicif pin" << endl;
+    cout << "    --func=<a-value> : is the a value (0-8) you can give" << endl;
     cout << "    --width=time   : set the width time in us." << endl;
     cout << "    --leadtime=time : is the time that the level is initial set before the pulse is generated" << endl;
     cout << "    --posttime=time : is the time that the level is kept after the pulse is generated" << endl;
+    cout << "    --periods=periods : is the number of periods that are generated" << endl;
+    cout << "    --div=divider : this gives the divider value for the pwm clock" << endl;
+    cout << "    --frac=fraction : this give the fraction for the pwm clock" << endl;
+    cout << "    --freq=freq : this gives the frequency of the signal" << endl;
+    cout << "    --range=range: is the period range of the pwm signal" << endl;
+    cout << "    --duty=duty : is the duty in precent that the pwm signal should take" << endl;
+    cout << "    --phase=phase : is the phase that the pwm signal should take" << endl;
+    cout << "    --pwmmode=mode : set the mode of the pwm (zero, trailing, edging, phasecorrect, pde, ppm, msb, lsb)" << endl;
+    cout << "    --base=baseNr: pwm of the rp1 contains two different pwm channels pwm0 (0) and pwm1 (1)" << endl;
     cout << "flags:" << endl;
     cout << "     -positive : positive pulse/edge" << endl;
     cout << "     -negative : negative pulse/edge" << endl;
@@ -205,6 +262,247 @@ void logRegister(uint32_t reg, std::string title)
               << std::setw(8) << std::setfill('0') << reg
               << std::dec << std::setfill(' ')
               << '\n';
+}
+
+bool cmdPwmGetGlobal(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& error)
+{
+    CFuncTracer trace("cmdPwmGetRegisters", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        int base = 0;
+        auto itBase = options.find("base");
+        bool bHasBase = (itBase != options.end());
+		if (bHasBase)
+            base = std::stoi(itBase->second);
+
+        uint32_t global_cntrl = PwmRegisters->getGlobalCntrl(base);
+        uint32_t fifo_cntrl = PwmRegisters->getFifoCntrl(base);
+        uint32_t common_range = PwmRegisters->getCommonRange(base);
+        uint32_t common_duty = PwmRegisters->getCommonDuty(base);
+        uint32_t duty_fifo = PwmRegisters->getDutyFifo(base);
+    
+        logRegister(global_cntrl, std::format("GLOCAL_CTRL pwm{0} ", base));
+        logRegister(fifo_cntrl,   std::format("FIFO_CTRL pwm{0}   ", base));
+        logRegister(common_range, std::format("COMMON_RANGE pwm{0}", base));
+        logRegister(common_duty,  std::format("COMMON_DUTY pwm{0} ", base));
+        logRegister(duty_fifo,    std::format("DUTY_FIFI pwm{0}   ", base));
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+
+}
+bool cmdPwmGetRegisters(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmGetRegisters", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        int base = 0;
+        auto itPin = options.find("pin");
+        auto itBase = options.find("base");
+
+        bool bHasBase = (itBase != options.end());
+        bool bHasPin = (itPin != options.end());
+		if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+        if (bHasBase)
+            base = std::stoi(itBase->second);
+
+        int pin = std::stoi(itPin->second);
+        uint32_t control = PwmRegisters->getPWMReg_cntrl(pin, base);
+        uint32_t range = PwmRegisters->getPWMReg_range(pin, base);
+        uint32_t phase = PwmRegisters->getPWMReg_phase(pin, base);
+        uint32_t duty = PwmRegisters->getPWMReg_duty(pin, base);
+        int pwmChannel = PwmRegisters->getPwmIndex(pin);
+    
+        logRegister(control, std::format("PWM{0} CHAN{1}_CNTRL", base, pwmChannel));
+        logRegister(range,   std::format("PWM{0} CHAN{1}_RANGE", base, pwmChannel));
+        logRegister(phase,   std::format("PWM{0} CHAN{1}_PHASE", base, pwmChannel));
+        logRegister(duty,    std::format("PWM{0} CHAN{1}_DUTY ", base, pwmChannel));
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdPwmGetClockRegisters(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmGetClockRegisters", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+
+        uint32_t control = PwmRegisters->getPwmClockReg_cntrl();
+        uint32_t divFrac = PwmRegisters->getPwmClockReg_divFrac();
+        uint32_t divInt = PwmRegisters->getPwmClockReg_divInt();
+        uint32_t sel = PwmRegisters->getPwmClockReg_Sel();
+    
+        logRegister(control,    std::format("PWM{0} control", 0));
+        logRegister(sel,        std::format("PWM{0} sel    ", 0));
+        logRegister(divFrac,    std::format("PWM{0} divFrac", 0));
+        logRegister(divInt,     std::format("PWM{0} divInt ", 0));
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdPwmSetFrequency(const std::unordered_map<std::string, std::string>&options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmSetFrequency", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        
+        auto itPin = options.find("pin");
+        auto itFreq = options.find("freq");
+        auto itDuty = options.find("duty");
+
+        bool bHasPin = (itPin != options.end());
+        bool bHasFreq = (itFreq != options.end());
+        bool bHasDuty = (itDuty != options.end());
+
+        if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+        if (!bHasFreq)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the freq option"));
+			return false;
+		}
+        if (!bHasDuty)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the duty option"));
+			return false;
+		}
+
+        int pin = std::stoi(itPin->second);
+        int freq = std::stoi(itFreq->second);
+        int duty = std::stoi(itDuty->second);
+
+        bool bok = PwmRegisters->setFrequencyDuty(pin, freq, duty);
+        return bok;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+    
+}
+bool cmdPwmEnable(const std::unordered_map<std::string, std::string>&options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmEnable", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        
+        auto itPin = options.find("pin");
+        bool bHasPin = (itPin != options.end());
+
+        if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+
+        int pin = std::stoi(itPin->second);
+        bool bok = PwmRegisters->Enable(pin);
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdPwmDisable(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmDisable", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        
+        auto itPin = options.find("pin");
+        bool bHasPin = (itPin != options.end());
+
+        if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+
+        int pin = std::stoi(itPin->second);
+        bool bok = PwmRegisters->Disable(pin);
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;    
+}
+
+bool cmdFastClock(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdFastClock", tracer);
+    try
+    {
+        auto itPin = options.find("pin");
+        auto itPeriods = options.find("periods");
+        bool bHasPin = (itPin != options.end());
+        bool bHasPeriods = (itPeriods != options.end());
+
+		if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+
+        if (!bHasPeriods)
+        {
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the periods option"));
+			return false;
+        }
+
+        if (GpioRegisters == nullptr)
+            GpioRegisters = std::make_unique<SB::RPI5::RP1IO>(tracer);
+
+        int pin = std::stoi(itPin->second);
+        int period = std::stoi(itPeriods->second);
+        bool bok = GpioRegisters->FastClock(pin, period);
+        if (!bok)
+        {
+            errors.emplace_back(std::format("RUNTIME ERROR - FastClock failed"));
+            return false;
+        }
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        std::cerr << e.what() << '\n';
+    }
+    return false;
 }
 bool cmdGetGpioPad(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
 {
@@ -614,6 +912,7 @@ bool cmdSetPulse(const std::unordered_map<std::string, std::string>& options, st
     CFuncTracer trace("cmdSetPulse", tracer);
     try
     {
+        bool bok = false;
 		auto itPin = options.find("pin");
         auto itWidth = options.find("width");
         auto itLeadTime = (options.find("leadtime"));
@@ -624,6 +923,7 @@ bool cmdSetPulse(const std::unordered_map<std::string, std::string>& options, st
         bool bHasPostTime = (itPostTime != options.end());
         bool bPositive = (flags.find("positive") != flags.end());
         bool bListen = (flags.find("listen") != flags.end());
+        bool bRegistry = (flags.find("registry") != flags.end());
         int leadTime = 10;
         int postTime = 10;
 
@@ -644,13 +944,25 @@ bool cmdSetPulse(const std::unordered_map<std::string, std::string>& options, st
 
 		int pin = std::stoi(itPin->second);
         int width = std::stoi(itWidth->second);
-        if (pinNr != -1)
-            ioPin.ReleasePin(pinNr, errors);
-        pinNr = pin;
 
-		bool bok = ioPin.SetPulse(pinNr, width, leadTime, postTime, (bPositive)? SB::RPI5::PulseType::ePositive: SB::RPI5::PulseType::eNegative, bListen, errors);
-		if (!bok)
-			errors.emplace_back(std::format("RUNTIME-ERROR : could not generate pulse on pin {0}", pin));
+        if (bRegistry == false)
+        {
+            if (pinNr != -1)
+                ioPin.ReleasePin(pinNr, errors);
+            pinNr = pin;
+
+            bok = ioPin.SetPulse(pinNr, width, leadTime, postTime, (bPositive)? SB::RPI5::PulseType::ePositive: SB::RPI5::PulseType::eNegative, bListen, errors);
+            if (!bok)
+                errors.emplace_back(std::format("RUNTIME-ERROR : could not generate pulse on pin {0}", pin));
+        }
+        else
+        {
+            if (GpioRegisters == nullptr)
+                GpioRegisters = std::make_unique<SB::RPI5::RP1IO>(tracer);
+            bok = GpioRegisters->SetPulse(pin, width, leadTime, postTime, (bPositive)? SB::RPI5::eRp1IoPulseType::ePositive : SB::RPI5::eRp1IoPulseType::eNegative, bListen);
+            if (!bok)
+                errors.emplace_back(std::format("RUNTIME-ERROR : Could not generate pulse on pin {0}", pin));
+        }
         return bok;
     }
     catch (const std::exception& ex)
@@ -661,6 +973,51 @@ bool cmdSetPulse(const std::unordered_map<std::string, std::string>& options, st
     }
     return false;
 }
+bool cmdPinSetFunction(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPinSetFunction", tracer);
+    try
+    {
+        if (GpioRegisters == nullptr)
+            GpioRegisters = std::make_unique<SB::RPI5::RP1IO>(tracer);
+
+        auto itPin = options.find("pin");
+        auto itPad = options.find("pad");
+        auto itFunc = options.find("func");
+
+        bool bHasPin = (itPin != options.end());
+        bool bHasPad = (itPad != options.end());
+        bool bHasFunc = (itFunc != options.end());
+
+        if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+        if (!bHasPad)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pad option"));
+			return false;
+		}
+        if (!bHasFunc)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the func option"));
+			return false;
+		}
+        int pin = std::stoi(itPin->second);
+        int pad = std::stoi(itPad->second);
+        int func = std::stoi(itFunc->second);
+
+        bool bok = GpioRegisters->setFunction(pin, func, pad);
+        return bok;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+
 
 
 bool cmdMeasRC(const std::unordered_map<std::string, std::string>& options,
@@ -727,15 +1084,35 @@ bool Shell()
 
     try
     {
+          using_history();
+
+        // Make sure arrow keys work even if terminfo/keymaps are missing
+        rl_bind_keyseq("\\e[A", rl_get_previous_history); // Up
+        rl_bind_keyseq("\\e[B", rl_get_next_history);     // Down
+        rl_bind_keyseq("\\e[C", rl_forward_char);         // Right (optional)
+        rl_bind_keyseq("\\e[D", rl_backward_char);        // Left  (optional)
+
         std::vector<std::string> errors;
+
 
         do
         {
             std::cout << std::endl;
-            std::cout << "Command : ";
-            std::cin.getline(cCmdLine, 1023);
+            char* line = readline("Command : ");
+            if (!line)
+                break;
 
-            std::string sCmdLine = cCmdLine;
+            std::string sCmdLine(line);
+            free(line);
+            if (sCmdLine.empty())
+                continue;
+
+            // Add the in-memory history (enables up/down navigation)
+            add_history(sCmdLine.c_str());
+
+            // optional: persistent
+            // write_history(".cli_history");
+
             auto vcArgs = string_ext::split(sCmdLine, ' ');
 
             if (!vcArgs.empty())
@@ -913,12 +1290,99 @@ bool Shell()
                         }
                     }
                     break;
+                    case eCmd::eFastClk:
+                    {
+                        bool bok = cmdFastClock(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdFastClock failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePinSetFunction:
+                    {
+                        bool bok = cmdPinSetFunction(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPinSetFunction failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
 
                     case eCmd::eQuit:
 					{
                         ioPin.ReleasePin(pinNr, errors);
                         bStop = true;
 					}
+                    break;
+
+                    case eCmd::ePwmGetReg:
+                    {
+                        bool bok = cmdPwmGetRegisters(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmRegisters failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmGetClk:
+                    {
+                        bool bok = cmdPwmGetClockRegisters(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmGetClockRegisters failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmGetRegGlobal:
+                    {
+                        bool bok = cmdPwmGetGlobal(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmGetGlobal failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmSetFrequencyDuty:
+                    {
+                        bool bok = cmdPwmSetFrequency(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmSetFrequency failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmEnable:
+                    {
+                        bool bok = cmdPwmEnable(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmEnable failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmDisable:
+                    {
+                        bool bok = cmdPwmDisable(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmDisable failed");
+                            Usage(errors);
+                        }
+                    }
                     break;
 
                     case eCmd::eUnknown:

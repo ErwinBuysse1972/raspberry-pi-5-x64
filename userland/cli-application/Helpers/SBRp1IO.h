@@ -4,17 +4,11 @@
 #include <vector>
 #include <linux/gpio.h>
 #include <gpiod.h>
+#include "RP1Base.h"
 #include "../Tracer/ctracer.h"
 
 namespace SB::RPI5
 {
-
-    typedef struct 
-    {
-        uint32_t status;
-        uint32_t ctrl;
-    } RP1_GPIO_Regs_t;
-
 
     typedef struct 
     {
@@ -39,9 +33,15 @@ namespace SB::RPI5
         eCurrent_12mA,
         eUnknown
     };
+     enum class eRp1IoPulseType
+    {
+        ePositive,
+        eNegative,
+        eUnknown
+    };
 
 
-    class RP1IO
+    class RP1IO: public RP1Base
     {
     public:
         RP1IO(std::shared_ptr<CTracer> tracer);
@@ -80,20 +80,16 @@ namespace SB::RPI5
         eGpioSlewRate getGpioSlewRate(uint32_t pin);
         eGpioDrive getGpioDrive(uint32_t pin);
 
-    private:
-        std::shared_ptr<CTracer> m_trace;
-        uint32_t *m_PERIBase = nullptr;
-        uint32_t *m_GPIOBase = nullptr;
-        uint32_t *m_RIOBase = nullptr;
-        uint32_t *m_PADBase = nullptr;
-        uint32_t *m_pad = nullptr;
+        bool SetPulse(int pin, int widthus, int LeadPulseTimeUs, int PostPulseTimeUs, eRp1IoPulseType tp, bool bListen);
+        bool FastClock(int pin, int periods);
 
-        bool initialize();
+    private:
         RP1_GPIO_Regs_t* GPIOBase();
         RP1_Regs_t* RioBase();
         RP1_Regs_t* RioXor();
         RP1_Regs_t* RioSet();
-        RP1_Regs_t* RioClear();
-
+       RP1_Regs_t* RioClear();
     };
+
+
 }
