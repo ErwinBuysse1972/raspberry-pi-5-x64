@@ -19,7 +19,8 @@ namespace SB::RPI5
         MSBSerial = 0x4,
         PPM = 0x5,
         LeadingEdge = 0x6,
-        LSBSerial = 0x7
+        LSBSerial = 0x7,
+        Unknown = 0xFFFFFFFF,
     };
 
     typedef struct 

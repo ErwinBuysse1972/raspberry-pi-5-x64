@@ -408,6 +408,60 @@ bool cmdPwmSetFrequency(const std::unordered_map<std::string, std::string>&optio
     return false;
     
 }
+bool cmdPwmSetRange(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmSetRange", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        
+        auto itPin = options.find("pin");
+        auto itRange = options.find("range");
+        auto itDuty = options.find("duty");
+        auto itPhase = options.find("phase");
+
+        bool bHasPin = (itPin != options.end());
+        bool bHasRange = (itRange != options.end());
+        bool bHasDuty = (itDuty != options.end());
+        bool bHasPhase = (itPhase != options.end());
+
+        if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+        if (!bHasRange)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the range option"));
+			return false;
+		}
+        if (!bHasDuty)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the duty option"));
+			return false;
+		}
+        if (!bHasPhase)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the phase option"));
+			return false;
+		}
+
+        int pin = std::stoi(itPin->second);
+        int range = std::stoi(itRange->second);
+        int duty = std::stoi(itDuty->second);
+        int phase = std::stoi(itPhase->second);
+
+        bool bok = PwmRegisters->setRangeDutyPhase(pin, range, duty, phase);
+        return bok;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+    
+}
 bool cmdPwmEnable(const std::unordered_map<std::string, std::string>&options, std::vector<std::string>& errors)
 {
     CFuncTracer trace("cmdPwmEnable", tracer);
@@ -427,7 +481,7 @@ bool cmdPwmEnable(const std::unordered_map<std::string, std::string>&options, st
 
         int pin = std::stoi(itPin->second);
         bool bok = PwmRegisters->Enable(pin);
-        return true;
+        return bok;
     }
     catch(const std::exception& e)
     {
@@ -454,13 +508,119 @@ bool cmdPwmDisable(const std::unordered_map<std::string, std::string>& options, 
 
         int pin = std::stoi(itPin->second);
         bool bok = PwmRegisters->Disable(pin);
-        return true;
+        return bok;
     }
     catch(const std::exception& e)
     {
         trace.Error("Exception occurred : %s", e.what());
     }
     return false;    
+}
+bool cmdPwmSetMode(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmSetMode", tracer);
+    try
+    {
+         if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        
+        auto itPin = options.find("pin");
+        auto itMode = options.find("pwmmode");
+
+        bool bHasPin = (itPin != options.end());
+        bool bHasPwmMode = (itMode != options.end());
+
+        if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+        if (!bHasPwmMode)
+        {
+            errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pwm mode option"));
+            return false;
+        }
+
+        int pin = std::stoi(itPin->second);
+        SB::RPI5::pwm_mode mode = SB::RPI5::pwm_mode::Unknown;
+        //zero, trailing, edging, phasecorrect, pde, ppm, msb, lsb
+        if (itMode->second.find("zero") != std::string::npos) mode = SB::RPI5::pwm_mode::Zero;
+        else if (itMode->second.find("trailing") != std::string::npos) mode = SB::RPI5::pwm_mode::TrailingEdge;
+        else if (itMode->second.find("edging") != std::string::npos) mode = SB::RPI5::pwm_mode::LeadingEdge;
+        else if (itMode->second.find("phasecorrect") != std::string::npos) mode = SB::RPI5::pwm_mode::PhaseCorrect;
+        else if (itMode->second.find("pde") != std::string::npos) mode = SB::RPI5::pwm_mode::PDE;
+        else if (itMode->second.find("ppm") != std::string::npos) mode = SB::RPI5::pwm_mode::PPM;
+        else if (itMode->second.find("msb") != std::string::npos) mode = SB::RPI5::pwm_mode::MSBSerial;
+        else if (itMode->second.find("lsb") != std::string::npos) mode = SB::RPI5::pwm_mode::LSBSerial;
+        else
+        {
+            errors.emplace_back(std::format("SYNTAX-ERROR : mode is not valid {0}", itMode->second));
+            return false;
+        }
+
+        bool bok = PwmRegisters->setMode(pin, mode);
+        return bok;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+    
+}
+bool cmdPwmSetInvert(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmSetInvert", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        
+        auto itPin = options.find("pin");
+        bool bHasPin = (itPin != options.end());
+
+        if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+
+        int pin = std::stoi(itPin->second);
+        bool bok = PwmRegisters->setInvert(pin);
+        return bok;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdPwmClearInvert(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPwmSetInvert", tracer);
+    try
+    {
+        if (PwmRegisters == nullptr)
+            PwmRegisters = std::make_unique<SB::RPI5::RP1PWM>(tracer);
+        
+        auto itPin = options.find("pin");
+        bool bHasPin = (itPin != options.end());
+
+        if (!bHasPin)
+		{
+			errors.emplace_back(std::format("SYNTAX-ERROR : should contain the pin option"));
+			return false;
+		}
+
+        int pin = std::stoi(itPin->second);
+        bool bok = PwmRegisters->clrInvert(pin);
+        return bok;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
 }
 
 bool cmdFastClock(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
@@ -1380,6 +1540,50 @@ bool Shell()
                         if (!bok)
                         {
                             errors.emplace_back("cmdPwmDisable failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmSetMode:
+                    {
+                        bool bok = cmdPwmSetMode(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmSetMode failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmSetInvert:
+                    {
+                        bool bok = cmdPwmSetInvert(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmSetInvert failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmClearInvert:
+                    {
+                        bool bok = cmdPwmClearInvert(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmClearInvert failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePwmSetRangeDutyPhase:
+                    {
+                        bool bok = cmdPwmSetRange(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPwmSetRange failed");
                             Usage(errors);
                         }
                     }
