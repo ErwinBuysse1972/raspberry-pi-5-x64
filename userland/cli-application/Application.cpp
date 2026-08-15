@@ -171,7 +171,7 @@ eCmd GetCommand(std::string& command)
     if (sLower.find("i2ctype") != std::string::npos) return eCmd::eI2cGetComponentId;
     if (sLower.find("i2cdump") != std::string::npos) return eCmd::eI2cDumpReg;
     if (sLower.find("i2cscan") != std::string::npos) return eCmd::eI2cScan;
-    if (sLower.find("i2csreadreg") != std::string::npos) return eCmd::eI2cReadReg;
+    if (sLower.find("i2creadreg") != std::string::npos) return eCmd::eI2cReadReg;
     if (sLower.find("i2cwritereg") != std::string::npos) return eCmd::eI2cWriteReg;
 
     return eCmd::eUnknown;
@@ -220,8 +220,8 @@ void Usage(const std::vector<std::string>& errors)
     cout << "    - i2ctype : get the type identifier of the RP1 I2C control (optional --channel)" << endl;
     cout << "    - i2cdump : dump registry of the the RP1 I2C regs (optional --channel)" << endl;
     cout << "    - i2cscan : scan for i2c devices (optional --channel, --baudrate)" << endl;
-    cout << "    - i2csreadreg : reads from a specific i2c device (mandatory: --device, --register)(optional: --channel, --baudrate, --count)" << endl;
-    cout << "    - i2cwritereg : writes to  a specific i2c device (mandatory: --device, --register, --value) (optional --channel, --baudrate, --count)" << endl;
+    cout << "    - i2creadreg : reads from a specific i2c device (mandatory: --device, --register)(optional: --channel, --baudrate, --count)" << endl;
+    cout << "    - i2cwritereg : writes to  a specific i2c device (mandatory: --device, --register, --value) (optional --channel, --baudrate)" << endl;
 
     cout << "options:" << endl;
     cout << "    --pin=<number> : give the pin you want to perform the actions" << endl;
@@ -243,6 +243,7 @@ void Usage(const std::vector<std::string>& errors)
     cout << "    --baudrate: set the baudrate for the communication in hz (default : 50kHz)" << endl;
     cout << "    --device: I2C device address" << endl;
     cout << "    --register: I2C register address" << endl;
+    cout << "    --count: I2C reads multiple registers in one single command if chip is providing it" << endl;
     cout << "    --value: value(s) to write, if more then one the separation key is space or comma" << endl;
     cout << "flags:" << endl;
     cout << "     -positive : positive pulse/edge" << endl;
@@ -599,19 +600,23 @@ bool cmdI2cReadRegister(const std::unordered_map<std::string, std::string>& opti
             }
 
             cout << "Device 0x"
-                 << std::hex
-                 << std::uppercase
-                 << std::setw(2)
-                 << std::setfill('0')
-                 << deviceAddress
+                << std::hex
+                << std::uppercase
+                << std::setw(2)
+                << std::setfill('0')
+                << static_cast<unsigned int>(deviceAddress)
 
-                 << ", register 0x"
-                 << std::setw(2)
-                 << static_cast<unsigned int>(value)
+                << ", register 0x"
+                << std::setw(2)
+                << static_cast<unsigned int>(registerAddress)
 
-                 <<std::dec
-                 << std::setfill(' ')
-                 << endl;
+                << " : 0x"
+                << std::setw(2)
+                << static_cast<unsigned int>(value)
+
+                << std::dec
+                << std::setfill(' ')
+                << endl;
         }
         else
         {
@@ -671,38 +676,193 @@ bool cmdI2cReadRegister(const std::unordered_map<std::string, std::string>& opti
 }
 bool cmdI2cWriteRegister(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
 {
-    CFuncTracer trace("cmdI2cReadRegister", tracer);
+    CFuncTracer trace("cmdI2cWriteRegister", tracer);
+
     try
     {
         if (I2cRegisters == nullptr)
             I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
 
         int32_t baudrate = 50000;
-        bool bok = false;
-        auto itChannel = options.find("channel");
-        auto itBaudrate = options.find("baudrate");
 
-        bool hasChannel = (itChannel != options.end());
-        bool hasBaudrate = (itBaudrate != options.end());
+        auto itChannel  = options.find("channel");
+        auto itBaudrate = options.find("baudrate");
+        auto itDevice   = options.find("device");
+        auto itRegister = options.find("register");
+        auto itValue    = options.find("value");
+
+        const bool hasChannel  = (itChannel  != options.end());
+        const bool hasBaudrate = (itBaudrate != options.end());
+        const bool hasDevice   = (itDevice   != options.end());
+        const bool hasRegister = (itRegister != options.end());
+        const bool hasValue    = (itValue    != options.end());
+
+        // Mandatory parameters
+        if (!hasDevice)
+        {
+            errors.emplace_back(
+                "SYNTAX-ERROR : missing mandatory parameter --device");
+            return false;
+        }
+
+        if (!hasRegister)
+        {
+            errors.emplace_back(
+                "SYNTAX-ERROR : missing mandatory parameter --register");
+            return false;
+        }
+
+        if (!hasValue)
+        {
+            errors.emplace_back(
+                "SYNTAX-ERROR : missing mandatory parameter --value");
+            return false;
+        }
 
         if (hasBaudrate)
-             baudrate = std::stoi(itBaudrate->second);
+            baudrate = std::stoi(itBaudrate->second, nullptr, 0);
 
+        // Parse as int first so range validation works correctly.
+        const int deviceAddressValue =
+            std::stoi(itDevice->second, nullptr, 0);
+
+        const int registerAddressValue =
+            std::stoi(itRegister->second, nullptr, 0);
+
+        const int valueValue =
+            std::stoi(itValue->second, nullptr, 0);
+
+        // Validate 7-bit I2C address
+        if (deviceAddressValue < 0x00 || deviceAddressValue > 0x7F)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : device address 0x{:X} "
+                    "is outside the 7-bit range 0x00..0x7F",
+                    deviceAddressValue));
+
+            return false;
+        }
+
+        // Validate 8-bit register address
+        if (registerAddressValue < 0x00 || registerAddressValue > 0xFF)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : register address 0x{:X} "
+                    "is outside the 8-bit range 0x00..0xFF",
+                    registerAddressValue));
+
+            return false;
+        }
+
+        // Validate 8-bit register value
+        if (valueValue < 0x00 || valueValue > 0xFF)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : value 0x{:X} "
+                    "is outside the 8-bit range 0x00..0xFF",
+                    valueValue));
+
+            return false;
+        }
+
+        const uint8_t deviceAddress =
+            static_cast<uint8_t>(deviceAddressValue);
+
+        const uint8_t registerAddress =
+            static_cast<uint8_t>(registerAddressValue);
+
+        const uint8_t value =
+            static_cast<uint8_t>(valueValue);
+
+        // Configure I2C channel
         if (hasChannel)
         {
-            int channel = std::stoi(itChannel->second);
-            bok = I2cRegisters->setChannel(channel, baudrate);
-            if (!bok)
+            const int channel =
+                std::stoi(itChannel->second, nullptr, 0);
+
+            if (!I2cRegisters->setChannel(channel, baudrate))
             {
-                errors.emplace_back(std::format("SYNTAX-ERROR : setChannel failed"));
+                errors.emplace_back(
+                    "SYNTAX-ERROR : setChannel failed");
+
                 return false;
             }
         }
+
+        // Perform register write
+        if (!I2cRegisters->writeRegister8(
+                deviceAddress,
+                registerAddress,
+                value))
+        {
+            errors.emplace_back(
+                std::format(
+                    "I2C-ERROR : failed to write value 0x{:02X} "
+                    "to register 0x{:02X} on device 0x{:02X}",
+                    value,
+                    registerAddress,
+                    deviceAddress));
+
+            return false;
+        }
+
+        cout << "Device 0x"
+             << std::hex
+             << std::uppercase
+             << std::setw(2)
+             << std::setfill('0')
+             << static_cast<unsigned int>(deviceAddress)
+
+             << ", register 0x"
+             << std::setw(2)
+             << static_cast<unsigned int>(registerAddress)
+
+             << " <- 0x"
+             << std::setw(2)
+             << static_cast<unsigned int>(value)
+
+             << std::dec
+             << std::nouppercase
+             << std::setfill(' ')
+             << endl;
+
+        trace.Info(
+            "Write device 0x%02X, register 0x%02X <- 0x%02X",
+            deviceAddress,
+            registerAddress,
+            value);
+
+        return true;
     }
-    catch(const std::exception& e)
+    catch (const std::invalid_argument& e)
+    {
+        errors.emplace_back(
+            std::format(
+                "SYNTAX-ERROR : invalid numeric parameter: {}",
+                e.what()));
+
+        trace.Error("Invalid argument : %s", e.what());
+    }
+    catch (const std::out_of_range& e)
+    {
+        errors.emplace_back(
+            std::format(
+                "SYNTAX-ERROR : numeric parameter out of range: {}",
+                e.what()));
+
+        trace.Error("Out of range : %s", e.what());
+    }
+    catch (const std::exception& e)
     {
         trace.Error("Exception occurred : %s", e.what());
+
+        errors.emplace_back(
+            std::format("ERROR : {}", e.what()));
     }
+
     return false;
 }
 

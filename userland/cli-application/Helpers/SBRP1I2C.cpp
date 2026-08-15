@@ -584,61 +584,94 @@ namespace SB::RPI5
     int RP1I2C::readBlockingInternal(uint8_t addr, uint8_t* dst, size_t len, bool nonStop, uint32_t timeoutPerCharUs)
     {
         CFuncTracer trace("RP1I2C::readBlockingInternal", m_trace);
+
         try
         {
+            if (dst == nullptr || len == 0)
+                return 0;
+
             enable(false);
             m_regs->tar = addr;
             enable(true);
 
+            size_t readRequests = 0;
+            size_t bytesReceived = 0;
+
             bool abort = false;
             bool timeout = false;
-            uint32_t abort_reason;
+            uint32_t abortReason = 0;
 
-            int byte_ctr;
-            int ilen = (int)len;
+            const uint64_t timeoutEnd =
+                micros() + static_cast<uint64_t>(timeoutPerCharUs) * len;
 
-            for (byte_ctr = 0; byte_ctr < ilen; ++byte_ctr)
+            while (bytesReceived < len)
             {
-                bool first = byte_ctr == 0;
-                bool last = byte_ctr == ilen - 1;
-
-                while (!getWriteAvailable());
-
-                uint32_t startbitnext = ((first & m_resetOnNext) ? 1u : 0u) << 10;
-                uint32_t stopbit = ((last && !nonStop)? 1u : 0u) << 9;
-                uint64_t tm = micros() + timeoutPerCharUs;
-                m_regs->data_cmd = startbitnext | stopbit | 0x100; // Indicates teh read bit in CMD Field
-
-                do
+                //
+                // Queue READ requests into the TX FIFO.
+                //
+                while (readRequests < len && getWriteAvailable() > 0)
                 {
-                    if (micros() > tm)
-                    {
-                        timeout = true;
-                        abort = true;
-                    }
-                    abort_reason = m_regs->tx_abrt_source;
-                    // check tx abort bits
-                    if (m_regs->raw_intr_stat & 0x40)
-                    {
-                        abort = true;
-                        m_regs->clr_tx_abrt;
-                    }
-                } while (!abort && !getReadAvailable());
+                    const bool first = (readRequests == 0);
+                    const bool last  = (readRequests == len - 1);
 
-                if (abort)
+                    uint32_t command = IC_DATA_CMD_CMD_READ;
+
+                    if (first && m_resetOnNext)
+                        command |= IC_DATA_CMD_RESTART;
+
+                    if (last && !nonStop)
+                        command |= IC_DATA_CMD_STOP;
+
+                    m_regs->data_cmd = command;
+
+                    ++readRequests;
+                }
+
+                //
+                // Check for transaction abort.
+                //
+                if (m_regs->raw_intr_stat & RAW_INTR_STAT_TX_ABRT)
+                {
+                    abortReason =
+                        static_cast<uint32_t>(m_regs->tx_abrt_source);
+
+                    (void)m_regs->clr_tx_abrt;
+
+                    abort = true;
                     break;
+                }
 
-                *dst++ = (uint8_t)m_regs->data_cmd;
+                //
+                // Drain all bytes currently available from RX FIFO.
+                //
+                while (bytesReceived < len && getReadAvailable() > 0)
+                {
+                    dst[bytesReceived] =
+                        static_cast<uint8_t>(m_regs->data_cmd & 0xFF);
+
+                    ++bytesReceived;
+                }
+
+                if (micros() > timeoutEnd)
+                {
+                    timeout = true;
+                    abort = true;
+                    break;
+                }
             }
+
             m_resetOnNext = nonStop;
+
             if (abort)
-                return handleAbort(timeout, abort_reason);
-            return byte_ctr;       
+                return handleAbort(timeout, abortReason);
+
+            return static_cast<int>(bytesReceived);
         }
-        catch(const std::exception& e)
+        catch (const std::exception& e)
         {
-            trace.Error("Exception occured : %s");
+            trace.Error("Exception occurred : %s", e.what());
         }
+
         return 0;
     }
     bool RP1I2C::probeQuickWriteAddressOnly(uint8_t addr7, uint32_t timeoutUs)
