@@ -21,6 +21,15 @@ namespace SB::RPI5
     constexpr uint32_t SLEW_FAST = (1u << 7);
     constexpr uint32_t SLEW_SLOW = 0;
 
+    #define RP1_I2C0_BASE 0x070000  
+    #define RP1_I2C1_BASE 0x074000  
+    #define RP1_I2C2_BASE 0x078000  
+    #define RP1_I2C3_BASE 0x07c000  
+    #define RP1_I2C4_BASE 0x080000  
+    #define RP1_I2C5_BASE 0x084000   
+    #define RP1_I2C6_BASE 0x088000   
+
+
     enum gpio_function_rp1: uint32_t
     {
         GPIO_FUNC_I2C = 3,
@@ -49,6 +58,7 @@ namespace SB::RPI5
             uint32_t *PADBase();
             uint32_t *pad();
             uint32_t *PWMBase(int pwmBase = 0);
+            uint32_t *I2CBase(int i2cBase = 0);
             uint32_t *PWMClockBase();
 
             bool setFunction(uint32_t pin, uint32_t func, uint32_t pad);
@@ -64,6 +74,12 @@ namespace SB::RPI5
             uint32_t *m_pad = nullptr;
             uint32_t *m_PWMBase0 = nullptr;
             uint32_t *m_PWMBase1 = nullptr;
+            uint32_t *m_i2cBase0 = nullptr;
+            uint32_t *m_i2cBase1 = nullptr;
+            uint32_t *m_i2cBase2 = nullptr;
+            uint32_t *m_i2cBase3 = nullptr;
+            uint32_t *m_i2cBase4 = nullptr;
+            uint32_t *m_i2cBase5 = nullptr;
             uint32_t *m_PWMClockBase = nullptr;
             uint32_t *m_PWMRegs = nullptr;
             

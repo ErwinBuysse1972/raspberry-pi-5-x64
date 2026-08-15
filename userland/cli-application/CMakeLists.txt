@@ -8,6 +8,7 @@ add_executable(cliApplication
     Helpers/RP1Base.cpp
     Helpers/SBRp1IO.cpp
     Helpers/SBRP1Pwm.cpp
+    Helpers/SBRP1I2C.cpp
 )
 
 target_include_directories(cliApplication

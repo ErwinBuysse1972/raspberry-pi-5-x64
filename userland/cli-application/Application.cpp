@@ -6,6 +6,7 @@
 #include "Helpers/DHT11.h"
 #include "Helpers/SBRp1IO.h"
 #include "Helpers/SBRP1Pwm.h"
+#include "Helpers/SBRP1I2C.h"
 #include "Tracer/cfunctracer.h"
 #include "Tracer/ctracer.h"
 
@@ -28,6 +29,7 @@ std::unordered_map<std::string, MOW::Statistics::MetricValue> m_Metrics;
 std::shared_ptr<CFileTracer> tracer = std::make_shared<CFileTracer>("./", "cliApplication.log", TracerLevel::TRACER_DEBUG_LEVEL);
 std::unique_ptr<SB::RPI5::RP1IO> GpioRegisters = nullptr;
 std::unique_ptr<SB::RPI5::RP1PWM> PwmRegisters = nullptr;
+std::unique_ptr<SB::RPI5::RP1I2C> I2cRegisters = nullptr;
 int pinNr = -1;
 SB::RPI5::SBPio ioPin(tracer);
 
@@ -67,6 +69,15 @@ enum class eCmd
     ePwmSetMode,
     ePwmSetInvert,
     ePwmClearInvert,
+
+    // I2C commands
+    eI2cGetVersion,
+    eI2cGetInfo,
+    eI2cGetComponentId,
+    eI2cDumpReg,
+    eI2cScan,
+    eI2cReadReg,
+    eI2cWriteReg,
 
     readDHT11,
     eQuit
@@ -155,9 +166,16 @@ eCmd GetCommand(std::string& command)
     if (sLower.find("pwmsetinvert") != std::string::npos) return eCmd::ePwmSetInvert;
     if (sLower.find("pwmclearinvert") != std::string::npos) return eCmd::ePwmClearInvert;
     if (sLower.find("setfunction") != std::string::npos) return eCmd::ePinSetFunction;
+    if (sLower.find("i2cversion") != std::string::npos) return eCmd::eI2cGetVersion;
+    if (sLower.find("i2cinfo") != std::string::npos) return eCmd::eI2cGetInfo;
+    if (sLower.find("i2ctype") != std::string::npos) return eCmd::eI2cGetComponentId;
+    if (sLower.find("i2cdump") != std::string::npos) return eCmd::eI2cDumpReg;
+    if (sLower.find("i2cscan") != std::string::npos) return eCmd::eI2cScan;
+    if (sLower.find("i2csreadreg") != std::string::npos) return eCmd::eI2cReadReg;
+    if (sLower.find("i2cwritereg") != std::string::npos) return eCmd::eI2cWriteReg;
+
     return eCmd::eUnknown;
 }
-
 void Usage(const std::vector<std::string>& errors)
 {
     CFuncTracer trace("Usage", tracer, false);
@@ -197,6 +215,14 @@ void Usage(const std::vector<std::string>& errors)
     cout << "    - pwmsetmode: set the mode of the pwm (mandatory --pin, --pwmmode)" << endl;
     cout << "    - pwmsetinvert: invert the pwm signal (mandatory --pin)" << endl;
     cout << "    - pwmclearinvert: clear the inversion of the signal (mandatory --pin)" << endl;
+    cout << "    - i2cversion : get the version of the i2c interface of the RP1 (optional --channel)" << endl;
+    cout << "    - i2cinfo : get the info of the i2c interface of the RP1 (optional --channel)" << endl;
+    cout << "    - i2ctype : get the type identifier of the RP1 I2C control (optional --channel)" << endl;
+    cout << "    - i2cdump : dump registry of the the RP1 I2C regs (optional --channel)" << endl;
+    cout << "    - i2cscan : scan for i2c devices (optional --channel, --baudrate)" << endl;
+    cout << "    - i2csreadreg : reads from a specific i2c device (mandatory: --device, --register)(optional: --channel, --baudrate, --count)" << endl;
+    cout << "    - i2cwritereg : writes to  a specific i2c device (mandatory: --device, --register, --value) (optional --channel, --baudrate, --count)" << endl;
+
     cout << "options:" << endl;
     cout << "    --pin=<number> : give the pin you want to perform the actions" << endl;
     cout << "    --pad=<padvalue> : gives the hw configuration for specicif pin" << endl;
@@ -213,6 +239,11 @@ void Usage(const std::vector<std::string>& errors)
     cout << "    --phase=phase : is the phase that the pwm signal should take" << endl;
     cout << "    --pwmmode=mode : set the mode of the pwm (zero, trailing, edging, phasecorrect, pde, ppm, msb, lsb)" << endl;
     cout << "    --base=baseNr: pwm of the rp1 contains two different pwm channels pwm0 (0) and pwm1 (1)" << endl;
+    cout << "    --channel=channelNr: give the requested channel number used for I2C (default: channel0)" << endl;
+    cout << "    --baudrate: set the baudrate for the communication in hz (default : 50kHz)" << endl;
+    cout << "    --device: I2C device address" << endl;
+    cout << "    --register: I2C register address" << endl;
+    cout << "    --value: value(s) to write, if more then one the separation key is space or comma" << endl;
     cout << "flags:" << endl;
     cout << "     -positive : positive pulse/edge" << endl;
     cout << "     -negative : negative pulse/edge" << endl;
@@ -236,7 +267,6 @@ void Usage(const std::vector<std::string>& errors)
 
     }
 }
-
 void logRegister(uint32_t reg, std::string title)
 {
     cout << title << endl;
@@ -263,6 +293,419 @@ void logRegister(uint32_t reg, std::string title)
               << std::dec << std::setfill(' ')
               << '\n';
 }
+
+bool cmdI2cGetVersion(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>&errors)
+{
+    CFuncTracer trace("cmdI2cGetVersion", tracer);
+    try
+    {
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+
+        bool bok = false;
+        auto itChannel = options.find("channel");
+        bool hasChannel = (itChannel != options.end());
+        if (hasChannel)
+        {
+            int channel = std::stoi(itChannel->second);
+            bok = I2cRegisters->setChannel(channel);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : setChannel failed"));
+                return false;
+            }
+        }
+
+        uint32_t version = I2cRegisters->getComponentVersion();
+        cout << "version : " << std::hex << version << endl;
+        trace.Info("Version : 0x%08x", version);
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdI2cGetInfo(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdI2cGetInfo", tracer);
+    try
+    {
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+
+        bool bok = false;
+        auto itChannel = options.find("channel");
+        bool hasChannel = (itChannel != options.end());
+        if (hasChannel)
+        {
+            int channel = std::stoi(itChannel->second);
+            bok = I2cRegisters->setChannel(channel);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : setChannel failed"));
+                return false;
+            }
+        }
+
+        uint32_t info = I2cRegisters->getInfo();
+        cout << "info : " << std::hex << info << endl;
+        trace.Info("Info : 0x%08x", info);
+
+        cout << "   details: " << I2cRegisters->getInfoString(info) << endl;
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdI2cGetComponentID(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdI2cGetComponentID", tracer);
+    try
+    {
+          if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+
+        bool bok = false;
+        auto itChannel = options.find("channel");
+        bool hasChannel = (itChannel != options.end());
+        if (hasChannel)
+        {
+            int channel = std::stoi(itChannel->second);
+            bok = I2cRegisters->setChannel(channel);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : setChannel failed"));
+                return false;
+            }
+        }
+
+        uint32_t id = I2cRegisters->getComponentType();
+        cout << "id : " << std::hex << id << endl;
+        trace.Info("Info : 0x%08x", id);
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdI2cDumpRegs(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+     CFuncTracer trace("cmdI2cGetComponentID", tracer);
+    try
+    {
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+
+        bool bok = false;
+        auto itChannel = options.find("channel");
+        bool hasChannel = (itChannel != options.end());
+        if (hasChannel)
+        {
+            int channel = std::stoi(itChannel->second);
+            bok = I2cRegisters->setChannel(channel);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : setChannel failed"));
+                return false;
+            }
+        }
+
+        std::string sRegs = I2cRegisters->dumpAllRegs("I2C register values");
+        cout << sRegs << endl;
+        trace.Info("%s", sRegs.c_str());
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdI2cScanDevices(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdI2cScabDevices", tracer);
+    try
+    {
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+
+        int32_t baudrate = 50000;
+        bool bok = false;
+        auto itChannel = options.find("channel");
+        auto itBaudrate = options.find("baudrate");
+
+        bool hasChannel = (itChannel != options.end());
+        bool hasBaudrate = (itBaudrate != options.end());
+
+        if (hasBaudrate)
+             baudrate = std::stoi(itBaudrate->second);
+
+        if (hasChannel)
+        {
+            int channel = std::stoi(itChannel->second);
+            bok = I2cRegisters->setChannel(channel, baudrate);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : setChannel failed"));
+                return false;
+            }
+        }
+#if 0 // DEBUGGING
+        const uint8_t testAddresses[] =
+        {
+            0x3F,
+            0x40,
+            0x41,
+            0x42,
+            0x6F,
+            0x70,
+            0x71
+        };
+
+        for (uint8_t address : testAddresses)
+        {
+            const bool found =
+                I2cRegisters->probeQuickWriteAddressOnly(address, 10000);
+
+            cout << "0x"
+                << std::hex
+                << static_cast<int>(address)
+                << " : "
+                << (found ? "FOUND" : "NOT FOUND")
+                << endl;
+        }
+#else
+        std::vector<uint8_t> avI2CDevs;
+        for (uint8_t addr = 0x03; addr <= 0x77; ++addr)
+        {
+            bool I2cFound = I2cRegisters->probeQuickWriteAddressOnly(addr, 500);
+            if (I2cFound)
+                avI2CDevs.push_back(addr);
+        }
+
+        int channel = I2cRegisters->getChannel();
+        trace.Info("#devices I2C (channel: %ld) found: %ld", channel, avI2CDevs.size());
+        cout << "#Devs found: " << avI2CDevs.size() << " (channel: " << channel << ")" << endl;
+        for(auto& addr : avI2CDevs)
+        {
+            trace.Info("  - 0x%08x", addr);
+            std::cout << "   - 0x"
+                      << std::hex
+                      << std::setw(2)
+                      << std::setfill('0')
+                      << static_cast<int>(addr)
+                      << std::endl;
+        }
+#endif
+        return true;
+    }
+    catch(std::exception& ex)
+    {
+        trace.Error("Exception occurred : %s", ex.what());
+    }
+    return false;
+}
+bool cmdI2cReadRegister(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdI2cReadRegister", tracer);
+    try
+    {
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+
+        int32_t baudrate = 50000;
+        bool bok = false;
+        auto itChannel = options.find("channel");
+        auto itBaudrate = options.find("baudrate");
+        auto itDevice = options.find("device");
+        auto itRegister = options.find("register");
+        auto itCount = options.find("count");
+
+        const bool hasChannel = (itChannel != options.end());
+        const bool hasBaudrate = (itBaudrate != options.end());
+        const bool hasDevice = (itDevice != options.end());
+        const bool hasRegister = (itRegister != options.end());
+        const bool hasCount = (itCount != options.end());
+
+        if (!hasRegister)
+        {
+            errors.emplace_back("SYNTAX-ERROR : missing mandatory parameter --register");
+            return false;
+        }
+
+        if (!hasDevice)
+        {
+            errors.emplace_back("SYNTAX-ERROR : missing mandatory parameter --device");
+            return false;
+        }
+        if (hasBaudrate)
+             baudrate = std::stoi(itBaudrate->second);
+
+        size_t count = 1; 
+        const uint8_t deviceAddress = std::stoi(itDevice->second, nullptr, 0);
+        const uint8_t registerAddress = std::stoi(itRegister->second, nullptr, 0);
+        if (hasCount)
+            count = static_cast<size_t>(std::stoi(itCount->second, nullptr, 0));
+
+        // check the validity of the i2c device address
+        if (deviceAddress < 0 || deviceAddress > 0x7F)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : 0x{:X} is outside the 7-bit range 0x00..0x7F", deviceAddress));
+            return false;
+        }
+
+        if (registerAddress < 0x00 || registerAddress > 0xFF)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : register address 0x{:X} is outside the 8-bit range 0x00..0xFF", registerAddress)
+                );
+            return false;
+        }
+
+        if (hasChannel)
+        {
+            int channel = std::stoi(itChannel->second);
+            bok = I2cRegisters->setChannel(channel, baudrate);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : setChannel failed"));
+                return false;
+            }
+        }
+
+        if (count == 1)
+        {
+            uint8_t value = 0;
+            if (!I2cRegisters->readRegsiter8(deviceAddress, registerAddress, value))
+            {
+                errors.emplace_back(
+                    std::format(
+                        "I2C-ERROR : failed to read register 0x{:02X} from device {:02X}",
+                        registerAddress,
+                        deviceAddress
+                    )
+                );
+                return false;
+            }
+
+            cout << "Device 0x"
+                 << std::hex
+                 << std::uppercase
+                 << std::setw(2)
+                 << std::setfill('0')
+                 << deviceAddress
+
+                 << ", register 0x"
+                 << std::setw(2)
+                 << static_cast<unsigned int>(value)
+
+                 <<std::dec
+                 << std::setfill(' ')
+                 << endl;
+        }
+        else
+        {
+            std::vector<uint8_t> values(count);
+
+            if (!I2cRegisters->readRegisters(
+                    deviceAddress,
+                    registerAddress,
+                    values.data(),
+                    count))
+            {
+                errors.emplace_back(
+                    std::format(
+                        "I2C-ERROR : failed to read {} registers starting at 0x{:02X} from device 0x{:02X}",
+                        count,
+                        registerAddress,
+                        deviceAddress
+                    )
+                );
+
+                return false;
+            }
+
+            cout << "Device 0x"
+                << std::hex
+                << std::uppercase
+                << std::setw(2)
+                << std::setfill('0')
+                << static_cast<unsigned int>(deviceAddress)
+                << endl;
+
+            for (size_t i = 0; i < count; ++i)
+            {
+                const uint8_t currentRegister =
+                    static_cast<uint8_t>(registerAddress + i);
+
+                cout << "  Register 0x"
+                    << std::setw(2)
+                    << static_cast<unsigned int>(currentRegister)
+                    << " : 0x"
+                    << std::setw(2)
+                    << static_cast<unsigned int>(values[i])
+                    << endl;
+            }
+
+            cout << std::dec
+                << std::setfill(' ');
+        }
+
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdI2cWriteRegister(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdI2cReadRegister", tracer);
+    try
+    {
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+
+        int32_t baudrate = 50000;
+        bool bok = false;
+        auto itChannel = options.find("channel");
+        auto itBaudrate = options.find("baudrate");
+
+        bool hasChannel = (itChannel != options.end());
+        bool hasBaudrate = (itBaudrate != options.end());
+
+        if (hasBaudrate)
+             baudrate = std::stoi(itBaudrate->second);
+
+        if (hasChannel)
+        {
+            int channel = std::stoi(itChannel->second);
+            bok = I2cRegisters->setChannel(channel, baudrate);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : setChannel failed"));
+                return false;
+            }
+        }
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+
 
 bool cmdPwmGetGlobal(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& error)
 {
@@ -1584,6 +2027,84 @@ bool Shell()
                         if (!bok)
                         {
                             errors.emplace_back("cmdPwmSetRange failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::eI2cGetComponentId:
+                    {
+                        bool bok = cmdI2cGetComponentID(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdI2cGetComponentID failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::eI2cGetInfo:
+                    {
+                        bool bok = cmdI2cGetInfo(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdI2cGetComponentID failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::eI2cGetVersion:
+                    {
+                        bool bok = cmdI2cGetVersion(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdI2cGetComponentID failed");
+                            Usage(errors);
+                        }
+
+                    }
+                    break;
+
+                    case eCmd::eI2cDumpReg:
+                    {
+                        bool bok = cmdI2cDumpRegs(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdI2cDumpRegs failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::eI2cScan:
+                    {
+                        bool bok = cmdI2cScanDevices(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdI2cScanDevices failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::eI2cReadReg:
+                    {
+                        bool bok = cmdI2cReadRegister(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdI2cReadRegister failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::eI2cWriteReg:
+                    {
+                        bool bok = cmdI2cWriteRegister(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdI2cWriteRegister failed");
                             Usage(errors);
                         }
                     }

@@ -40,6 +40,24 @@ namespace SB::RPI5
     uint32_t *RP1Base::PADBase(){ return m_PADBase;}
     uint32_t *RP1Base::pad(){ return m_pad;}
     uint32_t *RP1Base::PWMBase(int pwmBase){ return (pwmBase == 0)? m_PWMBase0: m_PWMBase1;}
+    uint32_t *RP1Base::I2CBase(int i2cBase)
+    {
+        CFuncTracer trace("RP1Base::I2CBase", m_trace);
+        switch(i2cBase)
+        {
+            case 0: return m_i2cBase0;
+            case 1: return m_i2cBase1;
+            case 2: return m_i2cBase2;
+            case 3: return m_i2cBase3;
+            case 4: return m_i2cBase4;
+            case 5: return m_i2cBase5;
+
+            default:
+                trace.Error("i2c base %ld not supported", i2cBase);
+                break;
+        }
+        return m_i2cBase0;
+    }
     uint32_t *RP1Base::PWMClockBase(){ return m_PWMClockBase;}
 
     bool RP1Base::initialize()
@@ -87,6 +105,13 @@ namespace SB::RPI5
             m_PWMBase0 = m_PERIBase + 0x98000 / 4;  // change 98000 to 9C000
             m_PWMBase1 = m_PERIBase + 0x9c000 / 4;
             m_PWMClockBase = m_PERIBase + 0x18000 / 4;
+            m_i2cBase0 = m_PERIBase + RP1_I2C0_BASE / 4;
+            m_i2cBase1 =  m_PERIBase + RP1_I2C1_BASE / 4;
+            m_i2cBase2 =  m_PERIBase + RP1_I2C2_BASE / 4;
+            m_i2cBase3 =  m_PERIBase + RP1_I2C3_BASE / 4;
+            m_i2cBase4 =  m_PERIBase + RP1_I2C4_BASE / 4;
+            m_i2cBase5 =  m_PERIBase + RP1_I2C5_BASE / 4;
+
 
 
             trace.Info("PERIBase : %p", m_PERIBase);
@@ -97,6 +122,12 @@ namespace SB::RPI5
             trace.Info("PWM_BASE0 : %p", m_PWMBase0);
             trace.Info("PWM_BASE1 : %p", m_PWMBase1);
             trace.Info("PWM_CLOCK_BASE : %p", m_PWMClockBase);
+            trace.Info("I2C0 : %p", m_i2cBase1);
+            trace.Info("I2C1 : %p", m_i2cBase1);
+            trace.Info("I2C2 : %p", m_i2cBase1);
+            trace.Info("I2C3 : %p", m_i2cBase1);
+            trace.Info("I2C4 : %p", m_i2cBase1);
+            trace.Info("I2C5 : %p", m_i2cBase1);
             return true;
         }
         catch(const std::exception& e)
