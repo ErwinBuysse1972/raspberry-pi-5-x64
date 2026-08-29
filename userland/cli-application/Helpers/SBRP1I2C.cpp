@@ -108,15 +108,26 @@ namespace SB::RPI5
         CFuncTracer trace("RP1I2C::init", m_trace);
         try
         {
-            trace.Info("baudrate: %ld", baudrate);
-            if (i2c) m_regs = i2c;
-            // dumpAllRegs("before init");
-            enable(false);
-            // configure as a fast mode master with repstart support, 7-bit addresses
+            trace.Info("baudrate: %u", baudrate);
+
+            if (i2c)
+                m_regs = i2c;
+
+            if (!enable(false))
+            {
+                trace.Error("Failed to disable I2C controller during initialization");
+                return static_cast<uint32_t>(-1);
+            }
+
+            //
+            // Master, fast mode, restart enabled,
+            // 7-bit addressing.
+            //
             m_regs->con = (0x2ul << 1) | 0x01 | 0x40 | 0x20 | 0x100;
-            // set fifo watermarks to 1
+
             m_regs->tx_tl = 0;
             m_regs->rx_tl = 0;
+
             return setBaudrate(baudrate);
         }
         catch(const std::exception& e)
@@ -130,23 +141,39 @@ namespace SB::RPI5
         CFuncTracer trace("RP1I2C::setBaudrate", m_trace);
         try
         {
-            trace.Info("baudrate: %ld", baudrate);
-            enable(false);
-            m_regs->con = (m_regs->con & ~0x06ul) | (0x02 << 1 & 0x06ul); 
-            uint32_t period = (constClk + baudrate / 2) / baudrate;
-            m_regs->fs_scl_lcnt = period * 3 / 5; // 40% duty cycle
+             trace.Info("baudrate: %d", baudrate);
+
+            if (!enable(false))
+            {
+                trace.Error( "Failed to disable I2C controller while setting baudrate");
+                return -1;
+            }
+
+            m_regs->con = (m_regs->con & ~0x06ul) | ((0x02ul << 1) & 0x06ul);
+            const uint32_t period = (constClk + baudrate / 2) / baudrate;
+            m_regs->fs_scl_lcnt = period * 3 / 5;
             m_regs->fs_scl_hcnt = period - m_regs->fs_scl_lcnt;
 
-            // set spike suppression
+            //
+            // Spike suppression.
+            //
             m_regs->fs_spklen = m_regs->fs_scl_lcnt < 16 ? 1 : m_regs->fs_scl_lcnt / 16;
-            // set the hold time
-            uint32_t sda_tx_hold_count = (baudrate < 1000000)?
-                                            ((constClk * 3)/1000000) + 1 :
-                                            ((constClk * 3) + 25000000) + 1;
-            m_regs->sda_hold = (m_regs->sda_hold & ~0x0000ffff) | (sda_tx_hold_count & 0x0000ffff);
-            enable(true);
+
+            //
+            // SDA hold time.
+            //
+            const uint32_t sdaTxHoldCount = (baudrate < 1000000) ? ((constClk * 3) / 1000000) + 1 : ((constClk * 3) + 25000000) + 1;
+            m_regs->sda_hold = (m_regs->sda_hold & ~0x0000FFFFu) | (sdaTxHoldCount & 0x0000FFFFu);
+
+            if (!enable(true))
+            {
+                trace.Error("Failed to enable I2C controller after setting baudrate");
+                return -1;
+            }
+
             m_baudrate = baudrate;
-            return constClk / period;
+
+            return static_cast<int32_t>( constClk / period);
         }
         catch(const std::exception& e)
         {
@@ -160,23 +187,366 @@ namespace SB::RPI5
     }
     int RP1I2C::readBlocking(uint8_t addr, uint8_t *dst, size_t len, bool nonstop)
     {
-        CFuncTracer trace("RP1I2C::readBlocking", m_trace);
+        CFuncTracer trace("RP1I2C::readBlocking", m_trace, false);
         if (m_baudrate == 0)
         {
             trace.Error("need to initialize the i2c before you can read");
             return -1;
         }
-        return readBlockingInternal(addr, dst, len, nonstop, 0xFFFFFFFF);
+        int result = readBlockingInternal(addr, dst, len, nonstop, 0xFFFFFFFF);
+        if (result < 0)
+        {
+            trace.Error(
+                "I2C read failed: "
+                "addr=0x%02X requested=%zu result=%d nonstop=%d",
+                addr,
+                len,
+                result,
+                nonstop ? 1 : 0);
+        }
+        else
+        {
+            trace.Info(
+                "I2C read: "
+                "addr=0x%02X requested=%zu read=%d nonstop=%d",
+                addr,
+                len,
+                result,
+                nonstop ? 1 : 0);
+        }
+        if (result > 0 && dst != nullptr)
+        {
+            std::string buffer;
+
+            for (int i = 0; i < result; ++i)
+            {
+                if (!buffer.empty())
+                    buffer += " ";
+
+                buffer += std::format(
+                    "{:02X}",
+                    static_cast<unsigned int>(dst[i]));
+            }
+
+            trace.Info(
+                "I2C RX buffer [%d bytes]: %s",
+                result,
+                buffer.c_str());
+        }
+        return result;
     }
     int RP1I2C::writeBlocking(uint8_t addr, const uint8_t *src, size_t len, bool nonstop)
     {
-        CFuncTracer trace("RP1I2C::writeBlocking", m_trace);
+        CFuncTracer trace("RP1I2C::writeBlocking", m_trace, false);
         if (m_baudrate == 0)
         {
             trace.Error("need to initialize the i2c before you can read");
             return -1;
         }
-        return writeBlockingInternal(addr, src, len, nonstop, 0xFFFFFF);
+        if (src != nullptr && len > 0)
+        {
+            std::string buffer;
+
+            for (size_t i = 0; i < len; ++i)
+            {
+                if (!buffer.empty())
+                    buffer += " ";
+
+                buffer += std::format(
+                    "{:02X}",
+                    static_cast<unsigned int>(src[i]));
+            }
+
+            trace.Info(
+                "I2C write: addr=0x%02X len=%zu nonstop=%d",
+                addr,
+                len,
+                nonstop ? 1 : 0);
+
+            trace.Info(
+                "I2C TX buffer [%zu bytes]: %s",
+                len,
+                buffer.c_str());
+        }
+
+        int result = writeBlockingInternal(addr, src, len, nonstop, 0xFFFFFF);
+        if (result < 0)
+        {
+            trace.Error(
+                "I2C write failed: "
+                "addr=0x%02X requested=%zu result=%d nonstop=%d",
+                addr,
+                len,
+                result,
+                nonstop ? 1 : 0);
+        }
+        else
+        {
+            trace.Info(
+                "I2C write result: "
+                "addr=0x%02X requested=%zu written=%d nonstop=%d",
+                addr,
+                len,
+                result,
+                nonstop ? 1 : 0);
+        }
+        return result;
+    }
+    int RP1I2C::writeReadBlocking(uint8_t addr, const uint8_t *writeData, size_t writeLen, uint8_t *readData, size_t readLen, uint32_t timeoutUs)
+    {
+        CFuncTracer trace("RP1I2C::writeReadBlocking", m_trace, false);
+
+        try
+        {
+            if (m_baudrate == 0)
+            {
+                trace.Error("need to initialize the i2c before you can read");
+                return -1;
+            }
+
+            if (writeData == nullptr || writeLen == 0)
+            {
+                trace.Error("Invalid write buffer");
+                return -1;
+            }
+
+            if (readData == nullptr || readLen == 0)
+            {
+                trace.Error("Invalid read buffer");
+                return -1;
+            }
+
+            //
+            // Configure the target once for the complete
+            // write + repeated START + read transaction.
+            //
+            if (!enable(false))
+            {
+                trace.Error("Failed to disable I2C controller");
+                return -1;
+            }
+
+            m_regs->tar = addr;
+
+            //
+            // Clear stale conditions from a previous transaction.
+            //
+            (void)m_regs->clr_tx_abrt;
+            (void)m_regs->clr_stop_det;
+
+            if (!enable(true))
+            {
+                trace.Error("Failed to enable I2C controller");
+                return -1;
+            }
+
+            //
+            // Log TX data.
+            //
+            {
+                std::string buffer;
+
+                for (size_t i = 0; i < writeLen; ++i)
+                {
+                    if (!buffer.empty())
+                        buffer += " ";
+
+                    buffer += std::format( "{:02X}", static_cast<unsigned int>(writeData[i]));
+                }
+
+                trace.Info( "I2C write/read: addr=0x%02X writeLen=%zu readLen=%zu",
+                                addr,
+                                writeLen,
+                                readLen);
+
+                trace.Info("I2C TX buffer [%zu bytes]: %s", writeLen, buffer.c_str());
+            }
+
+            size_t writeQueued   = 0;
+            size_t readQueued    = 0;
+            size_t bytesReceived = 0;
+
+            const uint64_t timeoutEnd = micros() + static_cast<uint64_t>(timeoutUs);
+
+            //
+            // Queue the write bytes followed immediately by
+            // the read commands.
+            //
+            while (bytesReceived < readLen)
+            {
+                //
+                // Fill available TX FIFO entries.
+                //
+                while (getWriteAvailable() > 0)
+                {
+                    //
+                    // First send all write bytes.
+                    //
+                    if (writeQueued < writeLen)
+                    {
+                        const uint32_t command = static_cast<uint32_t>( writeData[writeQueued]);
+
+                        //
+                        // No STOP here.
+                        //
+                        m_regs->data_cmd = command;
+
+                        ++writeQueued;
+                        continue;
+                    }
+
+                    //
+                    // Then queue the READ requests.
+                    //
+                    if (readQueued < readLen)
+                    {
+                        uint32_t command = IC_DATA_CMD_CMD_READ;
+
+                        //
+                        // The first read following the write
+                        // generates the repeated START.
+                        //
+                        if (readQueued == 0)
+                            command |= IC_DATA_CMD_RESTART;
+
+                        //
+                        // The final read generates STOP.
+                        //
+                        if (readQueued == readLen - 1)
+                            command |= IC_DATA_CMD_STOP;
+
+                        m_regs->data_cmd = command;
+
+                        ++readQueued;
+                        continue;
+                    }
+
+                    break;
+                }
+
+                //
+                // Check for I2C abort.
+                //
+                if (m_regs->raw_intr_stat & RAW_INTR_STAT_TX_ABRT)
+                {
+                    const uint32_t abortReason = static_cast<uint32_t>(m_regs->tx_abrt_source);
+
+                    trace.Error("I2C write/read aborted: addr=0x%02X reason=0x%08X",
+                                addr,
+                                abortReason);
+
+                    (void)m_regs->clr_tx_abrt;
+
+                    m_resetOnNext = false;
+
+                    return handleAbort(false, abortReason);
+                }
+
+                //
+                // Drain received bytes from RX FIFO.
+                //
+                while (bytesReceived < readLen && getReadAvailable() > 0)
+                {
+                    readData[bytesReceived] = static_cast<uint8_t>(m_regs->data_cmd & 0xFF);
+
+                    ++bytesReceived;
+                }
+
+                //
+                // Overall transaction timeout.
+                //
+                if (micros() > timeoutEnd)
+                {
+                    trace.Error(
+                        "I2C write/read timeout: "
+                        "addr=0x%02X "
+                        "writeQueued=%zu/%zu "
+                        "readQueued=%zu/%zu "
+                        "received=%zu/%zu",
+                        addr,
+                        writeQueued,
+                        writeLen,
+                        readQueued,
+                        readLen,
+                        bytesReceived,
+                        readLen);
+
+                    const uint32_t abortReason = static_cast<uint32_t>( m_regs->tx_abrt_source);
+
+                    m_resetOnNext = false;
+
+                    return handleAbort( true, abortReason);
+                }
+            }
+
+            //
+            // The last RX byte can become available just before
+            // STOP has actually completed on the I2C bus.
+            //
+            while (!(m_regs->raw_intr_stat & RAW_INTR_STAT_STOP_DET))
+            {
+                if (m_regs->raw_intr_stat & RAW_INTR_STAT_TX_ABRT)
+                {
+                    const uint32_t abortReason = static_cast<uint32_t>(m_regs->tx_abrt_source);
+
+                    trace.Error("I2C write/read aborted while waiting for STOP: addr=0x%02X reason=0x%08X",
+                        addr,
+                        abortReason);
+
+                    (void)m_regs->clr_tx_abrt;
+
+                    m_resetOnNext = false;
+
+                    return handleAbort(false, abortReason);
+                }
+
+                if (micros() > timeoutEnd)
+                {
+                    trace.Error("I2C write/read timeout waiting for STOP: addr=0x%02X",
+                        addr);
+
+                    const uint32_t abortReason =static_cast<uint32_t>(m_regs->tx_abrt_source);
+
+                    m_resetOnNext = false;
+
+                    return handleAbort(true, abortReason);
+                }
+            }
+
+            //
+            // Clear STOP condition now that the complete transaction
+            // has finished.
+            //
+            (void)m_regs->clr_stop_det;
+
+            m_resetOnNext = false;
+
+            //
+            // Log received data.
+            //
+            {
+                std::string buffer;
+
+                for (size_t i = 0; i < bytesReceived; ++i)
+                {
+                    if (!buffer.empty())
+                        buffer += " ";
+
+                    buffer += std::format( "{:02X}", static_cast<unsigned int>(readData[i]));
+                }
+
+                trace.Info( "I2C RX buffer [%zu bytes]: %s", bytesReceived, buffer.c_str());
+            }
+
+            return static_cast<int>(bytesReceived);
+        }
+        catch (const std::exception& e)
+        {
+            trace.Error( "Exception occurred : %s", e.what());
+        }
+
+        m_resetOnNext = false;
+        return -1;
     }
     int RP1I2C::readTimeoutPerCharUs(uint8_t addr, uint8_t *dst, size_t len, bool nonstop, uint32_t timeoutPerCharUs)
     {
@@ -223,31 +593,34 @@ namespace SB::RPI5
     }
     bool RP1I2C::readRegsiter8(uint8_t deviceAddress, uint8_t registerAddress, uint8_t& value)
     {
-        CFuncTracer trace("RP1I2C::readRegsiter8", m_trace);
+        CFuncTracer trace("RP1I2C::readRegsiter8", m_trace, false);
         try
         {
-            // Select the register without generating STOP
-            int result = writeBlocking(deviceAddress, &registerAddress, 1, true);
+            const int result = writeReadBlocking(
+                deviceAddress,
+                &registerAddress,
+                1,
+                &value,
+                1);
+
             if (result != 1)
             {
-                trace.Error("Failed to select register 0x%02X on device 0x%02X, result: %d",
-                        registerAddress,
-                        deviceAddress,
-                        result);
+                trace.Error(
+                    "Failed to read register 0x%02X "
+                    "from device 0x%02X, result=%d",
+                    registerAddress,
+                    deviceAddress,
+                    result);
+
                 return false;
             }
 
-            // The previous nonstop=true causes this transaction to start with a repeated START
-            result = readBlocking(deviceAddress, &value, 1, false);
-            if (result != 1)
-            {
-                trace.Error("Failed to read register 0x%02X on device 0x%02X, resutl: %d",
-                        registerAddress,
-                        deviceAddress,
-                        result);
-                return false;
-            }
-            return true;
+            trace.Info( "I2C register: device=0x%02X register=0x%02X value=0x%02X",
+                deviceAddress,
+                registerAddress,
+                value);
+
+        return true;
         }
         catch(const std::exception& e)
         {
@@ -307,25 +680,12 @@ namespace SB::RPI5
                 return false;
             }
 
-            // First select the device's internal register address
-            //   nonstop = true means no STOP is generated
-            int result = writeBlocking(deviceAddress, &startAddress, 1, true);
-            if (result != 1)
-            {   
-                trace.Error(
-                    "Failed to select register 0x%02X on device 0x%02X, result: %d",
-                    startAddress,
-                    deviceAddress,
-                    result);
-                return false;
-            }
-
-            // readBlocking will issue a repeated START because the preseding write used nonstop= true
-            result = readBlocking(
-                deviceAddress,
-                values,
-                count,
-                false);
+            const int result = writeReadBlocking(
+                                    deviceAddress,
+                                    &startAddress,
+                                    1,
+                                    values,
+                                    count);
 
             if (result != static_cast<int>(count))
             {
@@ -458,7 +818,28 @@ namespace SB::RPI5
                 != requestedState)
             {
                 if (micros() > timeout)
+                {
+                    trace.Error(
+                        "I2C enable timeout: "
+                        "requested=%u "
+                        "ENABLE=0x%08X "
+                        "ENABLE_STATUS=0x%08X "
+                        "STATUS=0x%08X "
+                        "RAW_INTR_STAT=0x%08X "
+                        "TX_ABRT_SOURCE=0x%08X "
+                        "TXFLR=%u "
+                        "RXFLR=%u",
+                        requestedState,
+                        static_cast<uint32_t>(m_regs->enable),
+                        static_cast<uint32_t>(m_regs->enable_status),
+                        static_cast<uint32_t>(m_regs->status),
+                        static_cast<uint32_t>(m_regs->raw_intr_stat),
+                        static_cast<uint32_t>(m_regs->tx_abrt_source),
+                        static_cast<uint32_t>(m_regs->txflr),
+                        static_cast<uint32_t>(m_regs->rxflr));
+
                     return false;
+                }
             }
 
             return true;
@@ -488,9 +869,10 @@ namespace SB::RPI5
     }
     int32_t RP1I2C::handleAbort(bool timeout, int32_t abortreason)
     {
-        CFuncTracer trace("RP1I2C::handleAbort", m_trace);
+        CFuncTracer trace("RP1I2C::handleAbort", m_trace, false);
         try
         {
+            trace.Error("I2C abort: timeout=%d reason=0x%08X", timeout ? 1 : 0, abortreason);
             if (timeout)
                 return 1 << 31 | 1 << 30;  // bit 30 set for timeout
             return abortreason | 1 << 31;
@@ -499,6 +881,7 @@ namespace SB::RPI5
         {
             trace.Error("exception occurred : %s", e.what());
         }
+        return -1;
     }
     size_t RP1I2C::getWriteAvailable()
     {
@@ -528,62 +911,166 @@ namespace SB::RPI5
     }
     int RP1I2C::writeBlockingInternal(uint8_t addr, const uint8_t *src, size_t len, bool nonstop, uint32_t timeoutPerCharUs)
     {
-        CFuncTracer trace("RP1I2C::writeBlockingInternal", m_trace);
+        CFuncTracer trace("RP1I2C::writeBlockingInternal", m_trace, false);
         try
         {
-            enable(false);
-            m_regs->tar = addr;
-            enable(true);
+            if (src == nullptr || len == 0)
+                return 0;
 
-            bool abort = false;
-            bool timeout = false;
-            bool restartOnNext = false;
-            uint32_t abortReason = 0;
-
-            int byteCtr;
-            int ilen = (int)len;
-
-            for (byteCtr = 0; byteCtr < ilen; ++ byteCtr)
+            //
+            // Configure target.
+            //
+            if (!enable(false))
             {
-                bool first = byteCtr == 0;
-                bool last  = byteCtr == (ilen - 1);
+                trace.Error("Failed to disable I2C controller");
+                return -1;
+            }
 
-                uint32_t startbitnext = ((first & m_resetOnNext) ? 1u : 0u) << 10;
-                uint32_t stopbit = ((uint32_t)!!(last && !nonstop)) << 9;
-                uint64_t tm = micros() + timeoutPerCharUs;
-                m_regs->data_cmd = startbitnext | stopbit | *src++;
-                do
-                {
-                    if (micros() > tm)
-                        timeout = true;
-                } while (!timeout && (m_regs->raw_intr_stat & 0x10));
-                if (timeout)
-                    break;
+            m_regs->tar = addr;
 
-                // check for non-timeout abort
-                abortReason = m_regs->tx_abrt_source;
-                if (abortReason)
+            //
+            // Clear stale status from previous transaction.
+            //
+            (void)m_regs->clr_tx_abrt;
+            (void)m_regs->clr_stop_det;
+
+            if (!enable(true))
+            {
+                trace.Error("Failed to enable I2C controller");
+                return -1;
+            }
+
+            size_t bytesQueued = 0;
+
+            const uint64_t timeoutEnd = micros() + static_cast<uint64_t>(timeoutPerCharUs) * static_cast<uint64_t>(len);
+
+            //
+            // Queue all write bytes.
+            //
+            while (bytesQueued < len)
+            {
+                //
+                // Check for abort.
+                //
+                if (m_regs->raw_intr_stat & RAW_INTR_STAT_TX_ABRT)
                 {
-                    uint32_t temp = m_regs->clr_tx_abrt;
-                    abort = true;
+                    const uint32_t abortReason = static_cast<uint32_t>( m_regs->tx_abrt_source);
+                    trace.Error("I2C write aborted: addr=0x%02X reason=0x%08X queued=%zu/%zu",
+                        addr,
+                        abortReason,
+                        bytesQueued,
+                        len);
+
+                    (void)m_regs->clr_tx_abrt;
+
+                    m_resetOnNext = false;
+
+                    return handleAbort( false, abortReason);
+                }
+
+                //
+                // Queue another byte when TX FIFO has room.
+                //
+                if (getWriteAvailable() > 0)
+                {
+                    const bool first = (bytesQueued == 0);
+                    const bool last = (bytesQueued == len - 1);
+
+                    uint32_t command = static_cast<uint32_t>( src[bytesQueued]);
+
+                    //
+                    // Support old nonstop/restart mechanism.
+                    //
+                    if (first && m_resetOnNext)
+                        command |= IC_DATA_CMD_RESTART;
+
+                    //
+                    // Normal write ends with STOP.
+                    //
+                    if (last && !nonstop)
+                        command |= IC_DATA_CMD_STOP;
+
+                    m_regs->data_cmd = command;
+
+                    ++bytesQueued;
+                }
+
+                if (micros() > timeoutEnd)
+                {
+                    trace.Error("I2C write timeout: addr=0x%02X queued=%zu/%zu",
+                        addr,
+                        bytesQueued,
+                        len);
+
+                    m_resetOnNext = false;
+
+                    return handleAbort(true, static_cast<uint32_t>(m_regs->tx_abrt_source));
                 }
             }
 
-            m_resetOnNext = nonstop;
-            if (abort || timeout)
-                return handleAbort( timeout, abortReason);
+            //
+            // If the transaction ends with STOP, do not return
+            // until STOP has actually completed on the bus.
+            //
+            if (!nonstop)
+            {
+                while (!(m_regs->raw_intr_stat & RAW_INTR_STAT_STOP_DET))
+                {
+                    if (m_regs->raw_intr_stat & RAW_INTR_STAT_TX_ABRT)
+                    {
+                        const uint32_t abortReason =static_cast<uint32_t>(m_regs->tx_abrt_source);
 
-            return byteCtr;
+                        trace.Error("I2C write aborted while waiting for STOP: addr=0x%02X reason=0x%08X",
+                            addr,
+                            abortReason);
+
+                        (void)m_regs->clr_tx_abrt;
+
+                        m_resetOnNext = false;
+
+                        return handleAbort(false,abortReason);
+                    }
+
+                    if (micros() > timeoutEnd)
+                    {
+                        trace.Error("I2C write timeout waiting for STOP: addr=0x%02X",
+                            addr);
+
+                        m_resetOnNext = false;
+
+                        return handleAbort(true, static_cast<uint32_t>(m_regs->tx_abrt_source));
+                    }
+                }
+
+                //
+                // Acknowledge/clear STOP_DET.
+                //
+                (void)m_regs->clr_stop_det;
+
+                m_resetOnNext = false;
+            }
+            else
+            {
+                //
+                // Only needed for legacy separate
+                // write + read operation.
+                //
+                m_resetOnNext = true;
+            }
+
+            return static_cast<int>(bytesQueued);
         }
-        catch(const std::exception& e)
+        catch (const std::exception& e)
         {
-            trace.Error("Exception occurred : %s", e.what());
+            trace.Error("Exception occurred : %s",e.what());
         }
-        return 0;
+
+        m_resetOnNext = false;
+        return -1;
     }
     int RP1I2C::readBlockingInternal(uint8_t addr, uint8_t* dst, size_t len, bool nonStop, uint32_t timeoutPerCharUs)
     {
-        CFuncTracer trace("RP1I2C::readBlockingInternal", m_trace);
+        CFuncTracer trace("RP1I2C::readBlockingInternal", m_trace, false);
 
         try
         {

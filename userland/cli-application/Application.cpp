@@ -7,6 +7,7 @@
 #include "Helpers/SBRp1IO.h"
 #include "Helpers/SBRP1Pwm.h"
 #include "Helpers/SBRP1I2C.h"
+#include "Helpers/PCA9685.h"
 #include "Tracer/cfunctracer.h"
 #include "Tracer/ctracer.h"
 
@@ -30,6 +31,7 @@ std::shared_ptr<CFileTracer> tracer = std::make_shared<CFileTracer>("./", "cliAp
 std::unique_ptr<SB::RPI5::RP1IO> GpioRegisters = nullptr;
 std::unique_ptr<SB::RPI5::RP1PWM> PwmRegisters = nullptr;
 std::unique_ptr<SB::RPI5::RP1I2C> I2cRegisters = nullptr;
+std::unique_ptr<SB::RPI5::PCA9685> PCAPwmController = nullptr;
 int pinNr = -1;
 SB::RPI5::SBPio ioPin(tracer);
 
@@ -78,6 +80,12 @@ enum class eCmd
     eI2cScan,
     eI2cReadReg,
     eI2cWriteReg,
+
+    // PCA9685 commands
+    ePca9585SetFreq,
+    ePca9585SetPwm,
+    ePca9585SetDuty,
+    ePca9585Dump,
 
     readDHT11,
     eQuit
@@ -173,6 +181,10 @@ eCmd GetCommand(std::string& command)
     if (sLower.find("i2cscan") != std::string::npos) return eCmd::eI2cScan;
     if (sLower.find("i2creadreg") != std::string::npos) return eCmd::eI2cReadReg;
     if (sLower.find("i2cwritereg") != std::string::npos) return eCmd::eI2cWriteReg;
+    if (sLower.find("pca9685setfreq") != std::string::npos) return eCmd::ePca9585SetFreq;
+    if (sLower.find("pca9685setpwm") != std::string::npos) return eCmd::ePca9585SetPwm;
+    if (sLower.find("pca9685setduty") != std::string::npos) return eCmd::ePca9585SetDuty;
+    if (sLower.find("pca9685dump") != std::string::npos) return eCmd::ePca9585Dump;
 
     return eCmd::eUnknown;
 }
@@ -222,7 +234,10 @@ void Usage(const std::vector<std::string>& errors)
     cout << "    - i2cscan : scan for i2c devices (optional --channel, --baudrate)" << endl;
     cout << "    - i2creadreg : reads from a specific i2c device (mandatory: --device, --register)(optional: --channel, --baudrate, --count)" << endl;
     cout << "    - i2cwritereg : writes to  a specific i2c device (mandatory: --device, --register, --value) (optional --channel, --baudrate)" << endl;
-
+    cout << "    - pca9685setfreq : set the frequency of the PCA9685 (mandatory: --freq, --i2caddress) (optional: --channel, --baudrate)" << endl;
+    cout << "    - pca9685setpwm : set the pwm of the PCA9685 (mandatory: --pwmchannel, --on, --off --i2caddress)  (optional: --channel, --baudrate)" << endl;
+    cout << "    - pca9685setduty: set the duty of the pwm (mandatory: --pwmchannel, --duty --i2caddress)  (optional: --channel, --baudrate)" << endl;
+    cout << "    - pca9685dump: dumps all the registers of the PCA9685 (optional: --startreg, --endreg)" << endl;
     cout << "options:" << endl;
     cout << "    --pin=<number> : give the pin you want to perform the actions" << endl;
     cout << "    --pad=<padvalue> : gives the hw configuration for specicif pin" << endl;
@@ -239,12 +254,15 @@ void Usage(const std::vector<std::string>& errors)
     cout << "    --phase=phase : is the phase that the pwm signal should take" << endl;
     cout << "    --pwmmode=mode : set the mode of the pwm (zero, trailing, edging, phasecorrect, pde, ppm, msb, lsb)" << endl;
     cout << "    --base=baseNr: pwm of the rp1 contains two different pwm channels pwm0 (0) and pwm1 (1)" << endl;
-    cout << "    --channel=channelNr: give the requested channel number used for I2C (default: channel0)" << endl;
+    cout << "    --channel=channelNr: give the requested channel number used for I2C (default: channel0) and PCA9685 (0..15)" << endl;
     cout << "    --baudrate: set the baudrate for the communication in hz (default : 50kHz)" << endl;
     cout << "    --device: I2C device address" << endl;
     cout << "    --register: I2C register address" << endl;
     cout << "    --count: I2C reads multiple registers in one single command if chip is providing it" << endl;
     cout << "    --value: value(s) to write, if more then one the separation key is space or comma" << endl;
+    cout << "    --pwmchannel : is the pwm channel of the PCA9685 chip (0..15)" << endl;
+    cout << "    --startreg: this is the first registery that is requested" << endl;
+    cout << "    --endreg : last register that you selected" << endl;
     cout << "flags:" << endl;
     cout << "     -positive : positive pulse/edge" << endl;
     cout << "     -negative : negative pulse/edge" << endl;
@@ -293,6 +311,577 @@ void logRegister(uint32_t reg, std::string title)
               << std::setw(8) << std::setfill('0') << reg
               << std::dec << std::setfill(' ')
               << '\n';
+}
+
+bool cmdPCA9685SetFrequency(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>&errors)
+{
+    CFuncTracer trace("cmdPCA9685SetFrequency", tracer);
+    try
+    {
+        uint8_t PCA9685_I2cAddress = 0x40;
+        float frequency = 0.0f;
+        uint32_t baudrate = 50000;
+        int channel = 0;
+
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+
+        auto i2caddress  = options.find("i2caddress");
+        auto freq = options.find("freq");
+        auto itChannel = options.find("channel");
+        auto itBaudrate = options.find("baudrate");
+
+        const bool hasI2CAddress  = (i2caddress  != options.end());
+        const bool hasFrequency = (freq != options.end());
+        const bool hasChannel = (itChannel != options.end());
+        const bool hasBaudrate = (itBaudrate != options.end());
+        
+        if (!hasI2CAddress)
+        {
+            trace.Info("I2CAddress : %u (default)", PCA9685_I2cAddress);
+        }
+        else
+        {
+            PCA9685_I2cAddress = std::stoi(i2caddress->second, nullptr, 0);
+            if (PCA9685_I2cAddress < 0 || PCA9685_I2cAddress > 0x7F)
+            {
+                 errors.emplace_back(
+                    std::format(
+                        "SYNTAX-ERROR : invalid I2C address 0x{:X}",
+                        PCA9685_I2cAddress));
+
+                return false;
+            }
+            trace.Info("I2CAddress : %u", PCA9685_I2cAddress);
+        }
+        if (!hasFrequency)
+        {
+            errors.emplace_back(std::format("SYNTAX-ERROR : Frequency is missing"));
+            return false;
+        }
+        frequency = std::stof(freq->second);
+         if (frequency <= 0.0f)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : invalid frequency {:.2f} Hz",
+                    frequency));
+
+            return false;
+        }
+
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+           
+
+        if (hasChannel)
+        {
+            channel = std::stoi(itChannel->second);
+            if (hasBaudrate)
+                baudrate = std::stoi(itBaudrate->second);
+
+            bool bok = I2cRegisters->setChannel(channel, baudrate);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : I2C setChannel failed"));
+                return false;
+            }
+        }
+
+        cout << "Parameters:" << endl;
+        cout << "Frequency : " << frequency << endl;
+
+        trace.Info( "Frequency : %.2f Hz", frequency);
+
+        if (PCAPwmController && 
+            PCAPwmController->getI2cAddress() != PCA9685_I2cAddress)
+        {
+            PCAPwmController.reset();
+        }
+        if (PCAPwmController == nullptr)
+        {
+            PCAPwmController = std::make_unique<SB::RPI5::PCA9685>(tracer, *I2cRegisters, PCA9685_I2cAddress);
+            if (!PCAPwmController->initialize())
+            {
+                errors.emplace_back("PCA9685-ERROR : initialization failed");
+                PCAPwmController.reset();
+                return false;
+            }
+        }
+
+        bool bok = PCAPwmController->setPWMFrequency(frequency);
+        if (!bok)
+        {
+            errors.emplace_back(
+                std::format(
+                    "PCA9685-ERROR : failed to write set frequency{:.2f} "
+                    "(I2cAddress: {:02X})",
+                    frequency,
+                    PCA9685_I2cAddress));
+        }
+        return bok;
+    }
+    catch (const std::invalid_argument& e)
+    {
+        errors.emplace_back(
+            std::format(
+                "SYNTAX-ERROR : invalid numeric parameter: {}",
+                e.what()));
+
+        trace.Error("Invalid argument : %s", e.what());
+    }
+    catch (const std::out_of_range& e)
+    {
+        errors.emplace_back(
+            std::format(
+                "SYNTAX-ERROR : numeric parameter out of range: {}",
+                e.what()));
+
+        trace.Error("Out of range : %s", e.what());
+    }
+    catch (const std::exception& e)
+    {
+        errors.emplace_back(
+            std::format(
+                "ERROR : {}",
+                e.what()));
+
+        trace.Error(
+            "Exception occurred : %s",
+            e.what());
+    }
+    return false;
+}
+bool cmdPCA9685SetPWM(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>&errors)
+{
+    CFuncTracer trace("cmdPCA9685SetPWM", tracer);
+    try
+    {
+        //I2c conffiguration settings
+        uint8_t PCA9685_I2cAddress = 0x40;
+        uint32_t baudrate = 50000;
+        int channel = 0;
+
+        // PCA9685 configuration settings
+        int pwmchannel = 0;
+        int on = 0;
+        int off = 0;
+
+        auto itI2cAddress = options.find("i2caddress");
+        auto itBaudrate = options.find("baudrate");
+        auto itI2cChannel = options.find("channel");
+        auto itPwmChannel = options.find("pwmchannel");
+        auto itOn = options.find("on");
+        auto itOff = options.find("off");
+
+        const bool hasI2cAddress = (itI2cAddress != options.end());
+        const bool hasI2cBaudrate = (itBaudrate != options.end());
+        const bool hasI2cChannel = (itI2cChannel != options.end());
+        const bool hasPwmChannel = (itPwmChannel != options.end());
+        const bool hasOn = (itOn != options.end());
+        const bool hasOff = (itOff != options.end());
+
+        if (!hasPwmChannel)
+        {
+            errors.emplace_back("SYNTAX-ERROR : missing mandatory parameter --pwmchannel");
+            return false;
+        }
+        if (!hasOn)
+        {
+            errors.emplace_back("SYNTAX-ERROR : missing mandatory parameter --on");
+            return false;
+        }
+        if (!hasOff)
+        {
+            errors.emplace_back("SYNTAX-ERROR : missing mandatory parameter --off");
+            return false;
+        }
+
+        pwmchannel = std::stoi(itPwmChannel->second, nullptr, 0);
+        on = std::stoi(itOn->second, nullptr, 0);
+        off = std::stoi(itOff->second, nullptr, 0);
+
+        if (pwmchannel < 0 || pwmchannel >= 16)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : invalid PWM channel {} (expected 0..15)",
+                    pwmchannel));
+
+            return false;
+        }
+        if (on < 0 || on > 4096)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : invalid ON value {} (expected 0..4096)",
+                    on));
+
+            return false;
+        }
+
+        if (off < 0 || off > 4096)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : invalid OFF value {} (expected 0..4096)",
+                    off));
+
+            return false;
+        }
+
+        trace.Info("pwmchannel : %u", pwmchannel);
+        trace.Info("on : %u", on);
+        trace.Info("off : %u", off);
+
+        cout << "Parameters:" << endl;
+        cout << "pwmChannel : " << pwmchannel << endl;
+        cout << "on : " << on << endl;
+        cout << "off : " << off << endl;
+
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+             
+        if (hasI2cChannel)
+        {
+            channel = std::stoi(itI2cChannel->second);
+            if (hasI2cBaudrate)
+                baudrate = std::stoi(itBaudrate->second);
+
+            bool bok = I2cRegisters->setChannel(channel, baudrate);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : I2C setChannel failed"));
+                return false;
+            }
+        }
+
+        if (!hasI2cAddress)
+        {
+            trace.Info("I2CAddress : %u (default)", PCA9685_I2cAddress);
+        }
+        else
+        {
+            PCA9685_I2cAddress = std::stoi(itI2cAddress->second, nullptr, 0);
+            if (PCA9685_I2cAddress < 0 || PCA9685_I2cAddress > 0x7F)
+            {
+                 errors.emplace_back(
+                    std::format(
+                        "SYNTAX-ERROR : invalid I2C address 0x{:X}",
+                        PCA9685_I2cAddress));
+
+                return false;
+            }
+            trace.Info("I2CAddress : %u", PCA9685_I2cAddress);
+        }
+
+        if (PCAPwmController && 
+            PCAPwmController->getI2cAddress() != PCA9685_I2cAddress)
+        {
+            PCAPwmController.reset();
+        }
+        if (PCAPwmController == nullptr)
+        {
+            PCAPwmController = std::make_unique<SB::RPI5::PCA9685>(tracer, *I2cRegisters, PCA9685_I2cAddress);
+            if (!PCAPwmController->initialize())
+            {
+                errors.emplace_back("PCA9685-ERROR : initialization failed");
+                PCAPwmController.reset();
+                return false;
+            }
+        }
+
+        bool bok = PCAPwmController->setPWM(pwmchannel, on, off);
+        if (!bok)
+        {
+            errors.emplace_back(
+                std::format(
+                    "PCA9685-ERROR : failed to write set pwm (pwmchannel: {}, on: {}, off: {})"
+                    " I2cAddress: {:02X}",
+                    pwmchannel,
+                    on,
+                    off,
+                    PCA9685_I2cAddress));
+        }
+        return bok;    
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdPCA9685SetDuty(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>&errors)
+{
+    CFuncTracer trace("cmdPCA9685SetDuty", tracer);
+    try
+    {
+        //I2c conffiguration settings
+        uint8_t PCA9685_I2cAddress = 0x40;
+        uint32_t baudrate = 50000;
+        int channel = 0;
+
+        // PCA9685 configuration settings
+        int pwmchannel = 0;
+        float duty = 0.50f;
+
+        auto itI2cAddress = options.find("i2caddress");
+        auto itBaudrate = options.find("baudrate");
+        auto itI2cChannel = options.find("channel");
+        auto itPwmChannel = options.find("pwmchannel");
+        auto itDuty = options.find("duty");
+
+        const bool hasI2cAddress = (itI2cAddress != options.end());
+        const bool hasI2cBaudrate = (itBaudrate != options.end());
+        const bool hasI2cChannel = (itI2cChannel != options.end());
+        const bool hasPwmChannel = (itPwmChannel != options.end());
+        const bool hasDuty = (itDuty != options.end());
+
+        if (!hasPwmChannel)
+        {
+            errors.emplace_back("SYNTAX-ERROR : missing mandatory parameter --pwmchannel");
+            return false;
+        }
+        if (!hasDuty)
+        {
+            errors.emplace_back("SYNTAX-ERROR : missing mandatory parameter --duty");
+            return false;
+        }
+
+        pwmchannel = std::stoi(itPwmChannel->second, nullptr, 0);
+        duty = std::stof(itDuty->second);
+
+        //
+        // Validate PWM channel
+        //
+        if (pwmchannel < 0 || pwmchannel >= 16)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : invalid PWM channel {} "
+                    "(expected 0..15)",
+                    pwmchannel));
+
+            return false;
+        }
+
+        //
+        // setDutyCycle() uses normalized duty:
+        // 0.0 = 0%
+        // 1.0 = 100%
+        //
+        if (duty < 0.0f || duty > 1.0f)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : invalid duty {:.3f} "
+                    "(expected 0.0..1.0)",
+                    duty));
+
+            return false;
+        }
+
+        trace.Info("pwmchannel : %u", pwmchannel);
+        trace.Info("duty : %.3f", duty);
+
+        cout << "Parameters:" << endl;
+        cout << "pwmChannel : " << pwmchannel << endl;
+        cout << "duty : " << duty << endl;
+
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+             
+        if (hasI2cChannel)
+        {
+            channel = std::stoi(itI2cChannel->second);
+            if (hasI2cBaudrate)
+                baudrate = std::stoi(itBaudrate->second);
+
+            bool bok = I2cRegisters->setChannel(channel, baudrate);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : I2C setChannel failed"));
+                return false;
+            }
+        }
+
+        if (!hasI2cAddress)
+        {
+            trace.Info("I2CAddress : %u (default)", PCA9685_I2cAddress);
+        }
+        else
+        {
+            PCA9685_I2cAddress = std::stoi(itI2cAddress->second, nullptr, 0);
+            if (PCA9685_I2cAddress < 0 || PCA9685_I2cAddress > 0x7F)
+            {
+                 errors.emplace_back(
+                    std::format(
+                        "SYNTAX-ERROR : invalid I2C address 0x{:X}",
+                        PCA9685_I2cAddress));
+
+                return false;
+            }
+            trace.Info("I2CAddress : %u", PCA9685_I2cAddress);
+        }
+
+        if (PCAPwmController && 
+            PCAPwmController->getI2cAddress() != PCA9685_I2cAddress)
+        {
+            PCAPwmController.reset();
+        }
+        if (PCAPwmController == nullptr)
+        {
+            PCAPwmController = std::make_unique<SB::RPI5::PCA9685>(tracer, *I2cRegisters, PCA9685_I2cAddress);
+            if (!PCAPwmController->initialize())
+            {
+                errors.emplace_back("PCA9685-ERROR : initialization failed");
+                PCAPwmController.reset();
+                return false;
+            }
+        }
+
+        bool bok = PCAPwmController->setDutyCycle(pwmchannel, duty);
+        if (!bok)
+        {
+            errors.emplace_back(
+                std::format(
+                    "PCA9685-ERROR : failed to write set duty (pwmchannel: {}, duty: {:.2f})"
+                    " I2cAddress: {:02X}",
+                    pwmchannel,
+                    duty,
+                    PCA9685_I2cAddress));
+        }
+        return bok;    
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
+}
+bool cmdPCA9685Dump(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>& errors)
+{
+    CFuncTracer trace("cmdPCA9685Dump", tracer);
+    try
+    {
+        //I2c conffiguration settings
+        uint8_t PCA9685_I2cAddress = 0x40;
+        uint32_t baudrate = 50000;
+        int channel = 0;
+
+        uint8_t startreg = 0x00;
+        uint8_t endreg = 0x45;
+
+        auto itI2cAddress = options.find("i2caddress");
+        auto itBaudrate = options.find("baudrate");
+        auto itI2cChannel = options.find("channel");
+        auto itStartReg = options.find("startreg");
+        auto itEndReg = options.find("endreg");
+
+        bool hasI2cAddress = (itI2cAddress != options.end());
+        bool hasBaudrate = (itBaudrate != options.end());
+        bool hasI2cChannel = (itI2cChannel != options.end());
+
+        bool hasStartReg = (itStartReg != options.end());
+        bool hasEndReg = (itEndReg != options.end());
+
+        if (hasStartReg)
+        {
+            startreg = std::stoi(itStartReg->second, nullptr, 0);
+            if (startreg > 0x45)
+            {
+                 errors.emplace_back(
+                    std::format(
+                        "SYNTAX-ERROR : invalid startreg 0x{:X}",
+                        startreg));
+                return false;
+            }
+        }
+
+        if (hasEndReg)
+        {
+            endreg = std::stoi(itEndReg->second, nullptr, 0);
+            if (endreg > 0x45)
+            {
+                 errors.emplace_back(
+                    std::format(
+                        "SYNTAX-ERROR : invalid endreg 0x{:X}",
+                        endreg));
+                return false;
+            }
+        }
+
+        if (startreg > endreg)
+        {
+            errors.emplace_back(
+                std::format(
+                    "SYNTAX-ERROR : startreg 0x{:X} > endreg 0x{:X}",
+                    startreg, endreg));
+            return false;
+        }
+
+        if (I2cRegisters == nullptr)
+            I2cRegisters = std::make_unique<SB::RPI5::RP1I2C>(tracer);
+             
+        if (hasI2cChannel)
+        {
+            channel = std::stoi(itI2cChannel->second);
+            if (hasBaudrate)
+                baudrate = std::stoi(itBaudrate->second);
+
+            bool bok = I2cRegisters->setChannel(channel, baudrate);
+            if (!bok)
+            {
+                errors.emplace_back(std::format("SYNTAX-ERROR : I2C setChannel failed"));
+                return false;
+            }
+        }
+
+        if (!hasI2cAddress)
+        {
+            trace.Info("I2CAddress : %u (default)", PCA9685_I2cAddress);
+        }
+        else
+        {
+            PCA9685_I2cAddress = std::stoi(itI2cAddress->second, nullptr, 0);
+            if (PCA9685_I2cAddress < 0 || PCA9685_I2cAddress > 0x7F)
+            {
+                 errors.emplace_back(
+                    std::format(
+                        "SYNTAX-ERROR : invalid I2C address 0x{:X}",
+                        PCA9685_I2cAddress));
+
+                return false;
+            }
+            trace.Info("I2CAddress : %u", PCA9685_I2cAddress);
+        }
+
+        if (PCAPwmController && 
+            PCAPwmController->getI2cAddress() != PCA9685_I2cAddress)
+        {
+            PCAPwmController.reset();
+        }
+        if (PCAPwmController == nullptr)
+        {
+            PCAPwmController = std::make_unique<SB::RPI5::PCA9685>(tracer, *I2cRegisters, PCA9685_I2cAddress);
+            if (!PCAPwmController->initialize())
+            {
+                errors.emplace_back("PCA9685-ERROR : initialization failed");
+                PCAPwmController.reset();
+                return false;
+            }
+        }
+
+        std::string sDump = PCAPwmController->dumpRegisters(startreg, endreg);
+        cout << "Regs:" << endl << sDump << endl;
+        trace.Info("Regs: %s", sDump.c_str());
+        return true;
+    }
+    catch(const std::exception& e)
+    {
+        trace.Error("Exception occurred : %s", e.what());
+    }
+    return false;
 }
 
 bool cmdI2cGetVersion(const std::unordered_map<std::string, std::string>& options, std::vector<std::string>&errors)
@@ -547,7 +1136,7 @@ bool cmdI2cReadRegister(const std::unordered_map<std::string, std::string>& opti
             return false;
         }
         if (hasBaudrate)
-             baudrate = std::stoi(itBaudrate->second);
+            baudrate = std::stoi(itBaudrate->second);
 
         size_t count = 1; 
         const uint8_t deviceAddress = std::stoi(itDevice->second, nullptr, 0);
@@ -2269,6 +2858,51 @@ bool Shell()
                         }
                     }
                     break;
+
+                    case eCmd::ePca9585SetFreq:
+                    {
+                        bool bok = cmdPCA9685SetFrequency(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPCA9685SetFrequency failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+    
+                    case eCmd::ePca9585SetPwm:
+                    {
+                        bool bok = cmdPCA9685SetPWM(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPCA9685SetPWM failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+    
+                    case eCmd::ePca9585SetDuty:
+                    {
+                        bool bok = cmdPCA9685SetDuty(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPCA9685SetDuty failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
+                    case eCmd::ePca9585Dump:
+                    {
+                        bool bok = cmdPCA9685Dump(pars.options, errors);
+                        if (!bok)
+                        {
+                            errors.emplace_back("cmdPCA9685Dump failed");
+                            Usage(errors);
+                        }
+                    }
+                    break;
+
 
                     case eCmd::eUnknown:
                     default:

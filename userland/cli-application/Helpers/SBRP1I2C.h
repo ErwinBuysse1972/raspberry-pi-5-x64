@@ -91,6 +91,7 @@ namespace SB::RPI5
             void reset();
             int readBlocking(uint8_t addr, uint8_t *dst, size_t len, bool nonstop);
             int writeBlocking(uint8_t addr, const uint8_t *src, size_t len, bool nonstop);
+            int writeReadBlocking(uint8_t addr, const uint8_t *writeData, size_t writeLen, uint8_t *readData, size_t readLen, uint32_t timeoutUS = 100000);
             int readTimeoutPerCharUs(uint8_t addr, uint8_t *dst, size_t len, bool nonstop, uint32_t timeoutPerCharUs);
             int writeTimeoutPerCharUs(uint8_t addr, const uint8_t *src, size_t len, bool nonstop, uint32_t timeoutPerCharUs);
             bool writeRegister8(uint8_t deviceAddress, uint8_t registerAddress, uint8_t value);
